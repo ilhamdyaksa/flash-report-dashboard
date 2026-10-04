@@ -13,12 +13,15 @@ import streamlit as st
 # ==========================================
 # 1. FUNGSI UTILITAS & PERHITUNGAN
 # ==========================================
-
 def hitung_jarak_haversine_vec(lat1, lon1, lat2_series, lon2_series):
     """Perhitungan Haversine cepat berbasis vektor (NumPy)."""
     R = 6371.0
     lat1_rad, lon1_rad = np.radians(lat1), np.radians(lon1)
-    lat2_rad, lon2_rad = np.radians(lat2_series.to_numpy()), np.radians(lon2_series.to_numpy())
+    
+    lat2_clean = lat2_series.fillna(0)
+    lon2_clean = lon2_series.fillna(0)
+    
+    lat2_rad, lon2_rad = np.radians(lat2_clean.to_numpy()), np.radians(lon2_clean.to_numpy())
 
     dlat = lat2_rad - lat1_rad
     dlon = lon2_rad - lon1_rad
@@ -107,6 +110,31 @@ def hitung_breakdown_site_transmisi(df):
         'g4_mw': g4_mw
     }
 
+def hitung_breakdown_power_tower(df):
+    """Menghitung Tipe Power dari Kolom R (index 17) dan Tipe Tower dari Kolom S (index 18)."""
+    power_summary = {}
+    tower_summary = {}
+
+    if len(df.columns) > 17:
+        power_col = df.columns[17]
+    else:
+        power_col = temukan_kolom(df, ['power', 'sumber_daya', 'sumber daya', 'catergory_power', 'tipe_power', 'power_type', 'catu_daya'])
+
+    if len(df.columns) > 18:
+        tower_col = df.columns[18]
+    else:
+        tower_col = temukan_kolom(df, ['tower', 'tipe_tower', 'tower_type', 'jenis_tower', 'structure', 'struk_tower'])
+
+    if power_col and power_col in df.columns:
+        p_series = df[power_col].astype(str).str.strip().str.title()
+        power_summary = p_series.value_counts().to_dict()
+    
+    if tower_col and tower_col in df.columns:
+        t_series = df[tower_col].astype(str).str.strip().str.upper()
+        tower_summary = t_series.value_counts().to_dict()
+
+    return power_summary, tower_summary
+
 def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadian, loc_label, mode_label, df_result):
     """Membaca template baku internal dan menimpa teks placeholder secara presisi."""
     template_path = "template_baku.pptx"
@@ -136,6 +164,10 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
 
     wilayah_info = hitung_ringkasan_wilayah(df_result)
     site_info = hitung_breakdown_site_transmisi(df_result)
+    
+    power_summary, tower_summary = hitung_breakdown_power_tower(df_result)
+    str_power = ", ".join([f"{k}: {v}" for k, v in power_summary.items()]) if power_summary else "-"
+    str_tower = ", ".join([f"{k}: {v}" for k, v in tower_summary.items()]) if tower_summary else "-"
 
     replacement_dict = {
         "{{jenis_kejadian}}": str(jenis_kejadian),
@@ -160,7 +192,9 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{g4_mw}}": str(site_info['g4_mw']),
         "{{n_uso}}": str(site_info['n_uso']),
         "{{uso_vsat}}": str(site_info['uso_vsat']),
-        "{{uso_mw}}": str(site_info['uso_mw'])
+        "{{uso_mw}}": str(site_info['uso_mw']),
+        "{{tipe_power}}": str_power,
+        "{{tipe_tower}}": str_tower
     }
 
     def ganti_teks_di_paragraf(paragraph):
@@ -213,7 +247,7 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
 if "result_df" not in st.session_state:
     st.session_state["result_df"] = pd.DataFrame()
 if "timeline_df" not in st.session_state:
-    st.session_state["timeline_df"] = pd.DataFrame() # Menyimpan histori per waktu (jam/menit)
+    st.session_state["timeline_df"] = pd.DataFrame()
 if "center_coords" not in st.session_state:
     st.session_state["center_coords"] = None
 if "loc_label" not in st.session_state:
@@ -274,14 +308,15 @@ if file_master is not None:
                     df_status[col_b_name].astype(str).str.strip()
                 )
 
-                df_status['parsed_time'] = pd.to_datetime(combined_datetime, errors='coerce', dayfirst=True)
+                # PERBAIKAN: dayfirst=False agar membaca format MM/DD/YYYY dengan benar
+                df_status['parsed_time'] = pd.to_datetime(combined_datetime, errors='coerce', dayfirst=False)
                 if df_status['parsed_time'].isna().all():
                     df_status['parsed_time'] = pd.to_datetime(combined_datetime, errors='coerce')
 
                 df_status['date_str'] = df_status['parsed_time'].dt.strftime('%Y-%m-%d')
                 df_status['date_str'] = df_status['date_str'].fillna(df_status[col_a_name].astype(str))
 
-                # --- SIMPAN TIMELINE UNTUK GRAFIK TAB 2 ---
+                # --- SIMPAN TIMELINE UNTUK GRAFIK ---
                 timeline_df = df_status[['site_id_clean', 'parsed_time', 'avail_num', 'traffic_num', 'user_num']].dropna(subset=['parsed_time']).copy()
                 st.session_state["timeline_df"] = timeline_df
 
@@ -349,7 +384,7 @@ if not df_master.empty and 'status' in df_master.columns:
     if lat_col and lon_col:
         df_master[lat_col] = pd.to_numeric(df_master[lat_col], errors='coerce')
         df_master[lon_col] = pd.to_numeric(df_master[lon_col], errors='coerce')
-        df_master = df_master.dropna(subset=[lat_col, lon_col])
+        # TANPA DROPNA AGAR JUMLAH BARIS TETAP UTUH (699 BARIS)
 
         if main_category == "Pilih Berdasarkan Area / Identitas Site":
             kategori_area = st.sidebar.selectbox("Pilih Kategori Pencarian:", ["Kabupaten", "Kecamatan", "Desa", "Provinsi", "Site ID"])
@@ -420,18 +455,40 @@ if not result_df.empty:
     
     wilayah_info = hitung_ringkasan_wilayah(result_df)
     site_info = hitung_breakdown_site_transmisi(result_df)
+    power_summary, tower_summary = hitung_breakdown_power_tower(result_df)
 
     status_counts = result_df['status'].astype(str).str.lower().value_counts()
     bts_down = status_counts.get('down', 0)
     bts_up = status_counts.get('up', 0)
     unmonitor = len(result_df) - bts_down - bts_up 
 
-    total_traffic_mb = result_df['traffic_mb'].sum()
-    total_traffic_gb = total_traffic_mb / 1024.0
-    total_period_mb = result_df['total_traffic_mb_period'].sum() if 'total_traffic_mb_period' in result_df.columns else total_traffic_mb
+    # --- PERHITUNGAN AGREGASI KESELURUHAN (Filter 24 Jam) ---
+    total_period_mb = result_df['total_traffic_mb_period'].sum() if 'total_traffic_mb_period' in result_df.columns else result_df['traffic_mb'].sum()
     total_period_gb = total_period_mb / 1024.0
     total_active_users = int(result_df['max_user'].sum())
+    
+    timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
+    rata_avail = 0.0
+    label_avail = "Rata-rata Availability"
+    
+    if not timeline_df.empty:
+        affected_sites = result_df['site_id_clean'].unique()
+        trend_df_front = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)].copy()
+        
+        if not trend_df_front.empty:
+            trend_df_front['date_only'] = trend_df_front['parsed_time'].dt.date
+            trend_df_front['hour_only'] = trend_df_front['parsed_time'].dt.hour
+            trend_df_front['hours_count'] = trend_df_front.groupby(['site_id_clean', 'date_only'])['hour_only'].transform('nunique')
+            
+            valid_avail_df = trend_df_front[trend_df_front['hours_count'] >= 24]
+            if not valid_avail_df.empty:
+                rata_avail = valid_avail_df['avail_num'].mean()
+                label_avail = "Availability (Data 24 Jam)"
+            else:
+                rata_avail = trend_df_front['avail_num'].mean()
+                label_avail = "Availability (Total Raw)"
 
+    # 1. STATUS JARINGAN TERDAMPAK
     st.subheader("⚡ Status Jaringan Terdampak (Jam Terakhir)")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Site Terdampak", len(result_df))
@@ -440,6 +497,8 @@ if not result_df.empty:
     c4.metric("Unmonitor", unmonitor)
 
     st.markdown("---")
+    
+    # 2. KATEGORI & TRANSMISI SITE BAKTI
     st.subheader("📡 Kategori & Transmisi Site BAKTI")
     col_4g, col_uso = st.columns(2)
     with col_4g:
@@ -455,6 +514,40 @@ if not result_df.empty:
         m_uso_vsat.metric("Transmisi VSAT", site_info['uso_vsat'])
         m_uso_mw.metric("Transmisi MW", site_info['uso_mw'])
 
+    st.markdown("---")
+
+    # 3. KATEGORI TOWER-POWER SITE TERDAMPAK
+    st.subheader("🏗️ Kategori Tower-Power Site Terdampak")
+    col_power, col_tower = st.columns(2)
+    with col_power:
+        st.markdown("##### ⚡ Tipe Power (Catu Daya)")
+        if power_summary:
+            p_cols = st.columns(len(power_summary) if len(power_summary) <= 3 else 3)
+            for i, (p_type, p_val) in enumerate(power_summary.items()):
+                with p_cols[i % len(p_cols)]:
+                    st.metric(p_type, p_val)
+        else:
+            st.info("Data Tipe Power tidak ditemukan.")
+
+    with col_tower:
+        st.markdown("##### 🗼 Tipe Tower (Struktur)")
+        if tower_summary:
+            t_cols = st.columns(len(tower_summary) if len(tower_summary) <= 3 else 3)
+            for i, (t_type, t_val) in enumerate(tower_summary.items()):
+                with t_cols[i % len(t_cols)]:
+                    st.metric(t_type, t_val)
+        else:
+            st.info("Data Tipe Tower tidak ditemukan.")
+
+    st.markdown("---")
+    
+    # 4. RINGKASAN PERFORMA & TRAFFIC
+    st.subheader("📊 Ringkasan Performa & Traffic (Periode Terdampak)")
+    agg_c1, agg_c2, agg_c3 = st.columns(3)
+    agg_c1.metric(label_avail, f"{rata_avail:.2f} %")
+    agg_c2.metric("Total Traffic Keseluruhan", f"{total_period_gb:,.2f} GB")
+    agg_c3.metric("Total Active User", f"{total_active_users:,}")
+
     st.divider()
     
     # 3 TAB (Peta, Trend, Tabel)
@@ -466,39 +559,43 @@ if not result_df.empty:
         plotly_df['Status_Site'] = plotly_df['status'].astype(str).str.capitalize()
         color_map = {'Up': '#00BFFF', 'Down': '#FF5252', 'Unmonitor': '#FFC107'}
 
-        mean_lat = float(plotly_df[lat_col].mean())
-        mean_lon = float(plotly_df[lon_col].mean())
+        valid_map_df = plotly_df.dropna(subset=[lat_col, lon_col])
+        if not valid_map_df.empty:
+            mean_lat = float(valid_map_df[lat_col].mean())
+            mean_lon = float(valid_map_df[lon_col].mean())
 
-        fig_map = px.scatter_map(
-            plotly_df, lat=lat_col, lon=lon_col, color='Status_Site',
-            color_discrete_map=color_map, hover_name='site_id_clean',
-            hover_data={'status': True, 'traffic_mb': ':.2f', 'max_user': True, lat_col: False, lon_col: False},
-            zoom=8, center=dict(lat=mean_lat, lon=mean_lon), height=550
-        )
-
-        if center_coords:
-            center_marker_df = pd.DataFrame({'lat': [center_coords[0]], 'lon': [center_coords[1]]})
-            fig_map.add_scattermap(
-                lat=center_marker_df['lat'], lon=center_marker_df['lon'],
-                mode='markers', marker=dict(size=18, color='darkred', symbol='star'),
-                name=f"Pusat {jenis_kejadian}"
+            fig_map = px.scatter_map(
+                valid_map_df, lat=lat_col, lon=lon_col, color='Status_Site',
+                color_discrete_map=color_map, hover_name='site_id_clean',
+                hover_data={'status': True, 'traffic_mb': ':.2f', 'max_user': True, lat_col: False, lon_col: False},
+                zoom=8, center=dict(lat=mean_lat, lon=mean_lon), height=550
             )
 
-        map_layers_list = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
+            if center_coords:
+                center_marker_df = pd.DataFrame({'lat': [center_coords[0]], 'lon': [center_coords[1]]})
+                fig_map.add_scattermap(
+                    lat=center_marker_df['lat'], lon=center_marker_df['lon'],
+                    mode='markers', marker=dict(size=18, color='darkred', symbol='star'),
+                    name=f"Pusat {jenis_kejadian}"
+                )
 
-        geojson_path = 'indonesia.geojson'
-        if os.path.exists(geojson_path):
-            file_size_mb = os.path.getsize(geojson_path) / (1024 * 1024)
-            if file_size_mb <= 15.0:
-                try:
-                    with open(geojson_path, 'r', encoding='utf-8') as f:
-                        geojson_kab = json.load(f)
-                    map_layers_list.append({"sourcetype": "geojson", "source": geojson_kab, "type": "line", "color": "rgba(255, 255, 255, 0.6)", "line": {"width": 1.5}, "below": "traces"})
-                except Exception:
-                    pass
+            map_layers_list = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
 
-        fig_map.update_layout(map_style="white-bg", map_layers=map_layers_list, margin={"r":0,"t":0,"l":0,"b":0})
-        st.plotly_chart(fig_map, use_container_width=True)
+            geojson_path = 'indonesia.geojson'
+            if os.path.exists(geojson_path):
+                file_size_mb = os.path.getsize(geojson_path) / (1024 * 1024)
+                if file_size_mb <= 15.0:
+                    try:
+                        with open(geojson_path, 'r', encoding='utf-8') as f:
+                            geojson_kab = json.load(f)
+                        map_layers_list.append({"sourcetype": "geojson", "source": geojson_kab, "type": "line", "color": "rgba(255, 255, 255, 0.6)", "line": {"width": 1.5}, "below": "traces"})
+                    except Exception:
+                        pass
+
+            fig_map.update_layout(map_style="white-bg", map_layers=map_layers_list, margin={"r":0,"t":0,"l":0,"b":0})
+            st.plotly_chart(fig_map, use_container_width=True)
+        else:
+            st.info("Data koordinat tidak tersedia untuk menampilkan peta.")
         
     with tab2:
         st.markdown("#### **Tren Layanan Historis pada Area Terdampak**")
@@ -506,7 +603,7 @@ if not result_df.empty:
         
         if not timeline_df.empty:
             affected_sites = result_df['site_id_clean'].unique()
-            trend_df = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)]
+            trend_df = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)].copy()
             
             if not trend_df.empty:
                 trend_grouped = trend_df.groupby('parsed_time').agg(
@@ -527,7 +624,12 @@ if not result_df.empty:
                     markers=True
                 )
                 fig_avail.update_traces(line_color='#2E7D32', marker=dict(size=4))
-                fig_avail.update_layout(xaxis_tickangle=-45, plot_bgcolor='white', yaxis=dict(gridcolor='lightgray'))
+                fig_avail.update_layout(
+                    xaxis_tickangle=-45, 
+                    plot_bgcolor='white', 
+                    yaxis=dict(gridcolor='lightgray'),
+                    xaxis=dict(gridcolor='lightgray', showgrid=True, tickformat='%m/%d/%Y %H:%M')
+                )
                 
                 fig_traffic = px.line(
                     trend_grouped, x='parsed_time', y='total_traffic_gb', 
@@ -536,7 +638,12 @@ if not result_df.empty:
                     markers=True
                 )
                 fig_traffic.update_traces(line_color='#0277BD', marker=dict(size=4))
-                fig_traffic.update_layout(xaxis_tickangle=-45, plot_bgcolor='white', yaxis=dict(gridcolor='lightgray'))
+                fig_traffic.update_layout(
+                    xaxis_tickangle=-45, 
+                    plot_bgcolor='white', 
+                    yaxis=dict(gridcolor='lightgray'),
+                    xaxis=dict(gridcolor='lightgray', showgrid=True, tickformat='%m/%d/%Y %H:%M')
+                )
                 
                 fig_user = px.line(
                     trend_grouped, x='parsed_time', y='total_user', 
@@ -545,7 +652,12 @@ if not result_df.empty:
                     markers=True
                 )
                 fig_user.update_traces(line_color='#F9A825', marker=dict(size=4))
-                fig_user.update_layout(xaxis_tickangle=-45, plot_bgcolor='white', yaxis=dict(gridcolor='lightgray'))
+                fig_user.update_layout(
+                    xaxis_tickangle=-45, 
+                    plot_bgcolor='white', 
+                    yaxis=dict(gridcolor='lightgray'),
+                    xaxis=dict(gridcolor='lightgray', showgrid=True, tickformat='%m/%d/%Y %H:%M')
+                )
                 
                 with col_c1:
                     st.plotly_chart(fig_avail, use_container_width=True)
@@ -577,13 +689,12 @@ if not result_df.empty:
 
     with col_down:
         if st.session_state["generated_pptx_bytes"] is not None:
-            # Mengamankan nama lokasi dari karakter '/' atau ':' agar tidak error saat disimpan di Windows/Mac
             safe_lokasi = loc_label.replace('/', '_').replace(':', '_')
             
             st.download_button(
                 label="📥 Download File PPTX",
                 data=st.session_state["generated_pptx_bytes"],
-                file_name=f"Flash Report_{jenis_kejadian}_{safe_lokasi}.pptx",
+                file_name=f"Flash_Report_{jenis_kejadian}_{safe_lokasi}.pptx",
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 use_container_width=True
             )
