@@ -2,10 +2,13 @@ import io
 import os
 import json
 import re
+import math
+import requests
 from io import BytesIO
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 from pptx import Presentation
 from pptx.util import Inches, Pt
 import streamlit as st
@@ -14,7 +17,6 @@ import streamlit as st
 # 1. FUNGSI UTILITAS & PERHITUNGAN
 # ==========================================
 def hitung_jarak_haversine_vec(lat1, lon1, lat2_series, lon2_series):
-    """Perhitungan Haversine cepat berbasis vektor (NumPy)."""
     R = 6371.0
     lat1_rad, lon1_rad = np.radians(lat1), np.radians(lon1)
     
@@ -30,8 +32,48 @@ def hitung_jarak_haversine_vec(lat1, lon1, lat2_series, lon2_series):
     c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
     return R * c
 
+def buat_polygon_lingkaran(center_lat, center_lon, radius_km):
+    R = 6371.0
+    points = []
+    for angle in range(0, 360, 5):
+        theta = math.radians(angle)
+        lat_rad = math.radians(center_lat)
+        lon_rad = math.radians(center_lon)
+        
+        dist = radius_km / R
+        new_lat = math.asin(math.sin(lat_rad) * math.cos(dist) + math.cos(lat_rad) * math.sin(dist) * math.cos(theta))
+        new_lon = lon_rad + math.atan2(math.sin(theta) * math.sin(dist) * math.cos(lat_rad), math.cos(dist) - math.sin(lat_rad) * math.sin(new_lat))
+        
+        points.append([math.degrees(new_lon), math.degrees(new_lat)])
+    points.append(points[0]) 
+    
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [points]
+        }
+    }
+
+def hitung_auto_zoom(lat_series, lon_series, active_radius=None):
+    if lat_series.empty or lon_series.empty:
+        return 8.0
+    lat_min, lat_max = lat_series.min(), lat_series.max()
+    lon_min, lon_max = lon_series.min(), lon_series.max()
+    
+    max_diff = max(abs(lat_max - lat_min), abs(lon_max - lon_min))
+    
+    if active_radius is not None:
+        min_deg = ((active_radius + 20) * 2) / 111.0
+        max_diff = max(max_diff, min_deg)
+    
+    if max_diff == 0:
+        max_diff = 0.5
+        
+    zoom = 8.2 - math.log2(max_diff)
+    return max(4.0, min(zoom, 12.5))
+
 def temukan_kolom(df, keywords):
-    """Mencari nama kolom berdasarkan daftar kata kunci."""
     for col in df.columns:
         col_clean = re.sub(r'\s+', ' ', str(col).strip().lower())
         if col_clean in keywords:
@@ -43,7 +85,6 @@ def temukan_kolom(df, keywords):
     return None
 
 def clean_to_numeric(series):
-    """Membersihkan format string angka, desimal, dan persen."""
     return pd.to_numeric(
         series.astype(str)
         .str.replace('%', '', regex=False)
@@ -53,7 +94,6 @@ def clean_to_numeric(series):
     ).fillna(0)
 
 def hitung_ringkasan_wilayah(df):
-    """Menghitung jumlah unik Provinsi, Kabupaten, Kecamatan, dan Desa."""
     prov_col = temukan_kolom(df, ['provinsi', 'province', 'prov'])
     kab_col = temukan_kolom(df, ['kabupaten', 'regency', 'kab', 'kab/kota'])
     kec_col = temukan_kolom(df, ['kecamatan', 'district', 'kec'])
@@ -67,7 +107,6 @@ def hitung_ringkasan_wilayah(df):
     }
 
 def hitung_breakdown_site_transmisi(df):
-    """Menghitung jumlah BTS USO vs 4G serta transmisi VSAT vs MW."""
     cat_col = temukan_kolom(df, ['program', 'kategori', 'category', 'jenis_bts', 'bts_type', 'tipe_bts', 'sumber_dana', 'tipe site', 'tipe_site', 'tipe'])
     trans_col = temukan_kolom(df, ['transmisi', 'transmission', 'transport', 'backhaul', 'tipe_transmisi', 'sistem_transmisi'])
 
@@ -89,54 +128,37 @@ def hitung_breakdown_site_transmisi(df):
         g4_sites = df[g4_mask]
 
     uso_vsat = uso_mw = g4_vsat = g4_mw = 0
-
     if trans_col and trans_col in df.columns:
         if not uso_sites.empty:
             uso_tr = uso_sites[trans_col].astype(str).str.upper()
             uso_vsat = len(uso_sites[uso_tr.str.contains('VSAT', na=False)])
             uso_mw = len(uso_sites[uso_tr.str.contains('MW|MICROWAVE', regex=True, na=False)])
-
         if not g4_sites.empty:
             g4_tr = g4_sites[trans_col].astype(str).str.upper()
             g4_vsat = len(g4_sites[g4_tr.str.contains('VSAT', na=False)])
             g4_mw = len(g4_sites[g4_tr.str.contains('MW|MICROWAVE', regex=True, na=False)])
 
     return {
-        'n_uso': len(uso_sites),
-        'n_4g': len(g4_sites),
-        'uso_vsat': uso_vsat,
-        'uso_mw': uso_mw,
-        'g4_vsat': g4_vsat,
-        'g4_mw': g4_mw
+        'n_uso': len(uso_sites), 'n_4g': len(g4_sites),
+        'uso_vsat': uso_vsat, 'uso_mw': uso_mw,
+        'g4_vsat': g4_vsat, 'g4_mw': g4_mw
     }
 
-def hitung_breakdown_power_tower(df):
-    """Menghitung Tipe Power dari Kolom R (index 17) dan Tipe Tower dari Kolom S (index 18)."""
-    power_summary = {}
-    tower_summary = {}
+def replace_placeholder_shape_with_image(slide, img_bytes, target_keys, force_width=None, force_height=None):
+    target_keys_upper = [k.upper() for k in target_keys]
+    for shape in list(slide.shapes):
+        shape_name = shape.name.strip().upper()
+        if any(k in shape_name for k in target_keys_upper):
+            left, top = shape.left, shape.top
+            width = force_width if force_width else shape.width
+            height = force_height if force_height else shape.height
+            slide.shapes.add_picture(img_bytes, left, top, width=width, height=height)
+            sp = shape._element
+            sp.getparent().remove(sp)
+            return True
+    return False
 
-    if len(df.columns) > 17:
-        power_col = df.columns[17]
-    else:
-        power_col = temukan_kolom(df, ['power', 'sumber_daya', 'sumber daya', 'catergory_power', 'tipe_power', 'power_type', 'catu_daya'])
-
-    if len(df.columns) > 18:
-        tower_col = df.columns[18]
-    else:
-        tower_col = temukan_kolom(df, ['tower', 'tipe_tower', 'tower_type', 'jenis_tower', 'structure', 'struk_tower'])
-
-    if power_col and power_col in df.columns:
-        p_series = df[power_col].astype(str).str.strip().str.title()
-        power_summary = p_series.value_counts().to_dict()
-    
-    if tower_col and tower_col in df.columns:
-        t_series = df[tower_col].astype(str).str.strip().str.upper()
-        tower_summary = t_series.value_counts().to_dict()
-
-    return power_summary, tower_summary
-
-def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadian, loc_label, mode_label, df_result):
-    """Membaca template baku internal dan menimpa teks placeholder secara presisi."""
+def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadian, loc_label, mode_label, df_result, fig_map=None, fig_avail=None, fig_traffic=None, fig_user=None):
     template_path = "template_baku.pptx"
     
     if not os.path.exists(template_path) and os.path.exists("template_baku.pptx.pptx"):
@@ -165,10 +187,13 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
     wilayah_info = hitung_ringkasan_wilayah(df_result)
     site_info = hitung_breakdown_site_transmisi(df_result)
     
-    power_summary, tower_summary = hitung_breakdown_power_tower(df_result)
-    str_power = ", ".join([f"{k}: {v}" for k, v in power_summary.items()]) if power_summary else "-"
-    str_tower = ", ".join([f"{k}: {v}" for k, v in tower_summary.items()]) if tower_summary else "-"
-
+    # --- TAMBAHAN PERHITUNGAN SPESIFIK UP & DOWN ---
+    df_up = df_result[df_result['status'].str.lower() == 'up']
+    df_down = df_result[df_result['status'].str.lower() == 'down']
+    up_stats = hitung_breakdown_site_transmisi(df_up)
+    down_stats = hitung_breakdown_site_transmisi(df_down)
+    unmon_stats = hitung_breakdown_site_transmisi(df_result[~df_result['status'].str.lower().isin(['up', 'down'])])
+    
     replacement_dict = {
         "{{jenis_kejadian}}": str(jenis_kejadian),
         "{{detail_kejadian}}": str(detail_kejadian),
@@ -193,47 +218,65 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{n_uso}}": str(site_info['n_uso']),
         "{{uso_vsat}}": str(site_info['uso_vsat']),
         "{{uso_mw}}": str(site_info['uso_mw']),
-        "{{tipe_power}}": str_power,
-        "{{tipe_tower}}": str_tower
-    }
 
-    def ganti_teks_di_paragraf(paragraph):
-        p_text = paragraph.text
-        p_text = p_text.replace('\u200b', '').replace('\u200d', '')
         
-        cek_replace = False
-        for key in replacement_dict.keys():
-            if key in p_text:
-                cek_replace = True
-                break
-                
-        if cek_replace:
-            for key, val in replacement_dict.items():
-                p_text = p_text.replace(key, val)
-            
-            if len(paragraph.runs) > 0:
-                for i in range(len(paragraph.runs)):
-                    paragraph.runs[i].text = "" 
-                paragraph.runs[0].text = p_text 
-            else:
-                paragraph.text = p_text
+        # --- KAMUS PLACEHOLDER BARU YANG ANDA TANYAKAN ---
+        "{{4g_up}}": str(up_stats['n_4g']),
+        "{{uso_up}}": str(up_stats['n_uso']),
+        "{{4g_up_vsat}}": str(up_stats['g4_vsat']),
+        "{{4g_up_mw}}": str(up_stats['g4_mw']),
+        "{{uso_up_vsat}}": str(up_stats['uso_vsat']),
+        "{{uso_up_mw}}": str(up_stats['uso_mw']),
+        "{{4g_down}}": str(down_stats['n_4g']),
+        "{{uso_down}}": str(down_stats['n_uso']),
+        "{{4g_down_vsat}}": str(down_stats['g4_vsat']),
+        "{{4g_down_mw}}": str(down_stats['g4_mw']),
+        "{{uso_down_vsat}}": str(down_stats['uso_vsat']),
+        "{{uso_down_mw}}": str(down_stats['uso_mw']),
+        # ... (placeholder lainnya) ...
+        "{{4g_unmon_vsat}}": str(unmon_stats['g4_vsat']),
+        "{{4g_unmon_mw}}": str(unmon_stats['g4_mw']),
+        "{{uso_unmon_vsat}}": str(unmon_stats['uso_vsat']),
+        "{{uso_unmon_mw}}": str(unmon_stats['uso_mw'])
+    }
 
     def proses_shape(shape):
         if shape.has_text_frame:
             for paragraph in shape.text_frame.paragraphs:
-                ganti_teks_di_paragraf(paragraph)
+                p_text = paragraph.text.replace('\u200b', '').replace('\u200d', '')
+                if any(key in p_text for key in replacement_dict.keys()):
+                    for key, val in replacement_dict.items(): p_text = p_text.replace(key, val)
+                    if len(paragraph.runs) > 0:
+                        for i in range(len(paragraph.runs)): paragraph.runs[i].text = "" 
+                        paragraph.runs[0].text = p_text 
+                    else: paragraph.text = p_text
         elif shape.has_table:
             for row in shape.table.rows:
                 for cell in row.cells:
-                    for paragraph in cell.text_frame.paragraphs:
-                        ganti_teks_di_paragraf(paragraph)
+                    for paragraph in cell.text_frame.paragraphs: proses_shape(cell)
         elif shape.shape_type == 6: 
-            for sub_shape in shape.shapes:
-                proses_shape(sub_shape)
+            for sub_shape in shape.shapes: proses_shape(sub_shape)
 
     for slide in prs.slides:
-        for shape in slide.shapes:
-            proses_shape(shape)
+        for shape in slide.shapes: proses_shape(shape)
+
+    if len(prs.slides) >= 2 and fig_map is not None:
+        slide_map = prs.slides[1]
+        map_bytes = BytesIO(pio.to_image(fig_map, format="png", width=800, height=676, scale=2))
+        if not replace_placeholder_shape_with_image(slide_map, map_bytes, ["PH_MAP", "PETA", "MAP"], force_width=Inches(5.88), force_height=Inches(4.97)):
+            slide_map.shapes.add_picture(map_bytes, Inches(0.5), Inches(1.5), width=Inches(5.88), height=Inches(4.97))
+
+    if len(prs.slides) >= 3:
+        slide_chart = prs.slides[2]
+        if fig_avail is not None:
+            avail_bytes = BytesIO(pio.to_image(fig_avail, format="png", width=800, height=450, scale=2))
+            replace_placeholder_shape_with_image(slide_chart, avail_bytes, ["PH_AVAIL"])
+        if fig_traffic is not None:
+            traffic_bytes = BytesIO(pio.to_image(fig_traffic, format="png", width=800, height=450, scale=2))
+            replace_placeholder_shape_with_image(slide_chart, traffic_bytes, ["PH_TRAFFIC"])
+        if fig_user is not None:
+            user_bytes = BytesIO(pio.to_image(fig_user, format="png", width=800, height=450, scale=2))
+            replace_placeholder_shape_with_image(slide_chart, user_bytes, ["PH_USER"])
 
     buffer = BytesIO()
     prs.save(buffer)
@@ -244,139 +287,89 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
 # ==========================================
 # 2. INISIALISASI SESSION STATE
 # ==========================================
-if "result_df" not in st.session_state:
-    st.session_state["result_df"] = pd.DataFrame()
-if "timeline_df" not in st.session_state:
-    st.session_state["timeline_df"] = pd.DataFrame()
-if "center_coords" not in st.session_state:
-    st.session_state["center_coords"] = None
-if "loc_label" not in st.session_state:
-    st.session_state["loc_label"] = ""
-if "mode_label" not in st.session_state:
-    st.session_state["mode_label"] = ""
-if "generated_pptx_bytes" not in st.session_state:
-    st.session_state["generated_pptx_bytes"] = None
+if "result_df" not in st.session_state: st.session_state["result_df"] = pd.DataFrame()
+if "timeline_df" not in st.session_state: st.session_state["timeline_df"] = pd.DataFrame()
+if "center_coords" not in st.session_state: st.session_state["center_coords"] = None
+if "loc_label" not in st.session_state: st.session_state["loc_label"] = ""
+if "mode_label" not in st.session_state: st.session_state["mode_label"] = ""
+if "active_radius" not in st.session_state: st.session_state["active_radius"] = None
+if "filter_mode" not in st.session_state: st.session_state["filter_mode"] = "Batas Administrasi"
+if "jenis_kejadian" not in st.session_state: st.session_state["jenis_kejadian"] = "Gempa Bumi"
+if "detail_kejadian" not in st.session_state: st.session_state["detail_kejadian"] = "6.2 Mag"
+if "waktu_kejadian" not in st.session_state: st.session_state["waktu_kejadian"] = "Oktober 2026"
+if "generated_pptx_bytes" not in st.session_state: st.session_state["generated_pptx_bytes"] = None
 
 
 # ==========================================
 # 3. STREAMLIT UI & LOGIC
 # ==========================================
 st.set_page_config(page_title="Flash Report Bencana", layout="wide")
-
 st.title("Dashboard Laporan Dampak Kejadian")
 st.caption("Kementerian Komunikasi dan Digital — BAKTI")
 
-# --- SIDEBAR: DATA SOURCE ---
 st.sidebar.header("1. Upload Data Set")
-
-file_master = st.sidebar.file_uploader("1. Upload Master Site (Koordinat):", type=["xlsx", "xls", "csv"])
-file_status = st.sidebar.file_uploader("2. Upload Laporan BAKTI OSS (Raw Data):", type=["xlsx", "xls", "csv"])
+file_master = st.sidebar.file_uploader("1. Master Site:", type=["xlsx", "xls", "csv"])
+file_status = st.sidebar.file_uploader("2. Laporan OSS:", type=["xlsx", "xls", "csv"])
 
 df_master = pd.DataFrame()
-
 if file_master is not None:
     df_master = pd.read_csv(file_master) if file_master.name.endswith('.csv') else pd.read_excel(file_master)
     site_col_master = temukan_kolom(df_master, ['site id', 'site_id', 'id site', 'id_site', 'site', 'siteid'])
     
     if site_col_master:
         df_master['site_id_clean'] = df_master[site_col_master].astype(str).str.strip().str.upper()
-        
         if file_status is not None:
             df_status = pd.read_csv(file_status) if file_status.name.endswith('.csv') else pd.read_excel(file_status)
-            
             site_col_status = temukan_kolom(df_status, ['site id', 'site_id', 'id site', 'id_site', 'site', 'siteid'])
             avail_col = temukan_kolom(df_status, ['availability (%)', 'availability(%)', 'availability', 'avail', 'avail (%)'])
-            traffic_col = temukan_kolom(df_status, ['traffic/payload (mb)', 'traffic/payload(mb)', 'traffic / payload (mb)', 'payload (mb)', 'traffic (mb)', 'payload', 'traffic', 'traffic_mb', 'payload_mb'])
-            user_col = temukan_kolom(df_status, ['max active user', 'max_active_user', 'active user', 'active_user', 'user', 'max active users', 'rrc', 'max_user', 'peak user'])
+            traffic_col = temukan_kolom(df_status, ['traffic/payload (mb)', 'traffic/payload(mb)', 'payload (mb)', 'traffic (mb)', 'payload', 'traffic', 'traffic_mb'])
+            user_col = temukan_kolom(df_status, ['max active user', 'max_active_user', 'active user', 'user', 'max active users', 'rrc', 'max_user'])
 
             if site_col_status and avail_col and len(df_status.columns) >= 2:
                 df_status['site_id_clean'] = df_status[site_col_status].astype(str).str.strip().str.upper()
-                
                 for col_dup in ['status', 'traffic_mb', 'total_traffic_mb_period', 'max_user']:
-                    if col_dup in df_master.columns:
-                        df_master = df_master.drop(columns=[col_dup])
+                    if col_dup in df_master.columns: df_master = df_master.drop(columns=[col_dup])
 
                 df_status['avail_num'] = clean_to_numeric(df_status[avail_col])
                 df_status['traffic_num'] = clean_to_numeric(df_status[traffic_col]) if traffic_col else 0.0
                 df_status['user_num'] = clean_to_numeric(df_status[user_col]) if user_col else 0.0
 
-                col_a_name = df_status.columns[0]
-                col_b_name = df_status.columns[1]
-
-                combined_datetime = (
-                    df_status[col_a_name].astype(str).str.strip() + " " + 
-                    df_status[col_b_name].astype(str).str.strip()
-                )
-
-                # PERBAIKAN: dayfirst=False agar membaca format MM/DD/YYYY dengan benar
+                combined_datetime = df_status.iloc[:, 0].astype(str).str.strip() + " " + df_status.iloc[:, 1].astype(str).str.strip()
                 df_status['parsed_time'] = pd.to_datetime(combined_datetime, errors='coerce', dayfirst=False)
+                
                 if df_status['parsed_time'].isna().all():
                     df_status['parsed_time'] = pd.to_datetime(combined_datetime, errors='coerce')
-
-                df_status['date_str'] = df_status['parsed_time'].dt.strftime('%Y-%m-%d')
-                df_status['date_str'] = df_status['date_str'].fillna(df_status[col_a_name].astype(str))
-
-                # --- SIMPAN TIMELINE UNTUK GRAFIK ---
-                timeline_df = df_status[['site_id_clean', 'parsed_time', 'avail_num', 'traffic_num', 'user_num']].dropna(subset=['parsed_time']).copy()
-                st.session_state["timeline_df"] = timeline_df
-
-                df_last_status = df_status.sort_values('parsed_time').groupby('site_id_clean').last().reset_index()
-                df_last_status['status'] = df_last_status['avail_num'].apply(lambda x: 'Down' if x == 0 else 'Up')
                 
-                df_processed_status = df_last_status[['site_id_clean', 'status']].copy()
+                df_status['date_str'] = df_status['parsed_time'].dt.strftime('%Y-%m-%d').fillna(df_status.iloc[:, 0].astype(str))
 
-                df_status['hours_count'] = df_status.groupby(['site_id_clean', 'date_str'])[col_b_name].transform('nunique')
-                df_status_valid = df_status[df_status['hours_count'] >= 24].copy()
-                if df_status_valid.empty:
-                    df_status_valid = df_status.copy()
+                st.session_state["timeline_df"] = df_status[['site_id_clean', 'parsed_time', 'avail_num', 'traffic_num', 'user_num']].dropna(subset=['parsed_time']).copy()
 
-                daily_per_site = df_status_valid.groupby(['site_id_clean', 'date_str']).agg(
-                    total_traffic_day=('traffic_num', 'sum'),
-                    peak_user_day=('user_num', 'max')
-                ).reset_index()
-
-                df_metrics = daily_per_site.groupby('site_id_clean').agg(
-                    traffic_mb=('total_traffic_day', 'mean'),            
-                    total_traffic_mb_period=('total_traffic_day', 'sum'), 
-                    max_user=('peak_user_day', 'mean')                    
-                ).reset_index()
-
-                df_processed_status = pd.merge(df_processed_status, df_metrics, on='site_id_clean', how='left')
-                cols_to_merge = ['site_id_clean', 'status', 'traffic_mb', 'total_traffic_mb_period', 'max_user']
-                df_master = pd.merge(df_master, df_processed_status[cols_to_merge], on='site_id_clean', how='left')
+                df_last = df_status.sort_values('parsed_time').groupby('site_id_clean').last().reset_index()
+                df_last['status'] = df_last['avail_num'].apply(lambda x: 'Down' if x == 0 else 'Up')
                 
+                df_status['hours_count'] = df_status.groupby(['site_id_clean', 'date_str'])[df_status.columns[1]].transform('nunique')
+                df_valid = df_status[df_status['hours_count'] >= 24].copy()
+                if df_valid.empty: df_valid = df_status.copy()
+
+                df_metrics = df_valid.groupby(['site_id_clean', 'date_str']).agg(total_traffic_day=('traffic_num', 'sum'), peak_user_day=('user_num', 'max')).reset_index().groupby('site_id_clean').agg(traffic_mb=('total_traffic_day', 'mean'), total_traffic_mb_period=('total_traffic_day', 'sum'), max_user=('peak_user_day', 'mean')).reset_index()
+
+                df_processed = pd.merge(df_last[['site_id_clean', 'status']], df_metrics, on='site_id_clean', how='left')
+                df_master = pd.merge(df_master, df_processed, on='site_id_clean', how='left')
                 df_master['status'] = df_master['status'].fillna('Unmonitor')
-                df_master['traffic_mb'] = df_master['traffic_mb'].fillna(0.0)
-                df_master['total_traffic_mb_period'] = df_master['total_traffic_mb_period'].fillna(0.0)
-                df_master['max_user'] = df_master['max_user'].fillna(0.0)
-                
-                st.sidebar.success(f"Berhasil! Data status & trend siap.")
-            else:
-                st.sidebar.error("Kolom yang dibutuhkan tidak ditemukan pada file RAW OSS.")
+                for col in ['traffic_mb', 'total_traffic_mb_period', 'max_user']: df_master[col] = df_master[col].fillna(0.0)
+                st.sidebar.success("Berhasil! Data siap.")
         else:
-            st.sidebar.warning("File Laporan OSS belum diupload.")
             df_master['status'] = 'Unmonitor'
-    else:
-        st.sidebar.error("Error: Kolom 'Site ID' tidak ditemukan di file Master!")
-else:
-    st.sidebar.info("Silakan upload file Master Data untuk memulai.")
 
-# --- SIDEBAR: INFO KEJADIAN & FILTER ---
-st.sidebar.markdown("---")
-st.sidebar.header("2. Informasi Kejadian")
-jenis_kejadian = st.sidebar.text_input("Jenis Kejadian:", "Gempa Bumi")
-detail_kejadian = st.sidebar.text_input("Detail (Magnitudo/Skala):", "6.2 Mag")
-waktu_kejadian = st.sidebar.text_input("Waktu Kejadian:", "September 2026")
 
 st.sidebar.markdown("---")
 st.sidebar.header("3. Parameter Area Terdampak")
 
 main_category = st.sidebar.radio(
     "Metode Filter Titik Kejadian:",
-    ["Pilih Berdasarkan Area / Identitas Site", "Input Koordinat Manual"]
+    ["Pilih Berdasarkan Area / Identitas Site", "Input Koordinat Manual", "Data Live Gempa BMKG"]
 )
 
-# --- PROSES PENCARIAN AREA ---
 if not df_master.empty and 'status' in df_master.columns:
     lat_col = temukan_kolom(df_master, ['latitude', 'lat', 'y'])
     lon_col = temukan_kolom(df_master, ['longitude', 'long', 'lon', 'x'])
@@ -384,317 +377,258 @@ if not df_master.empty and 'status' in df_master.columns:
     if lat_col and lon_col:
         df_master[lat_col] = pd.to_numeric(df_master[lat_col], errors='coerce')
         df_master[lon_col] = pd.to_numeric(df_master[lon_col], errors='coerce')
-        # TANPA DROPNA AGAR JUMLAH BARIS TETAP UTUH (699 BARIS)
 
-        if main_category == "Pilih Berdasarkan Area / Identitas Site":
-            kategori_area = st.sidebar.selectbox("Pilih Kategori Pencarian:", ["Kabupaten", "Kecamatan", "Desa", "Provinsi", "Site ID"])
-            key_mapping = {
-                "Provinsi": temukan_kolom(df_master, ['provinsi', 'province', 'prov']),
-                "Kabupaten": temukan_kolom(df_master, ['kabupaten', 'regency', 'kab']),
-                "Kecamatan": temukan_kolom(df_master, ['kecamatan', 'district', 'kec']),
-                "Desa": temukan_kolom(df_master, ['desa', 'kelurahan', 'village']),
-                "Site ID": 'site_id_clean'
-            }
-            target_col = key_mapping.get(kategori_area)
-
-            if target_col and target_col in df_master.columns:
-                list_options = sorted(df_master[target_col].dropna().astype(str).unique().tolist())
-                selected_val = st.sidebar.selectbox(f"Cari/Pilih {kategori_area}:", options=["-- Pilih --"] + list_options)
-
-                filter_mode = st.sidebar.radio("Metode Cakupan Area:", ["Batas Administrasi Murni (Eksak)", "Radius Jarak (KM) dari Pusat Area"])
-                radius_km = 10
-                if filter_mode == "Radius Jarak (KM) dari Pusat Area":
-                    radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
-
-                if st.sidebar.button("Cari & Hitung Dampak") and selected_val != "-- Pilih --":
-                    matched_df = df_master[df_master[target_col].astype(str).str.lower() == selected_val.lower()]
-                    if not matched_df.empty:
-                        center_lat = matched_df[lat_col].mean()
-                        center_lon = matched_df[lon_col].mean()
-
-                        if filter_mode == "Batas Administrasi Murni (Eksak)":
-                            final_result = matched_df.copy()
-                            mode_desc = f"Batas Administrasi Murni ({kategori_area}: {selected_val})"
-                        else:
-                            df_master['jarak_km'] = hitung_jarak_haversine_vec(center_lat, center_lon, df_master[lat_col], df_master[lon_col])
-                            final_result = df_master[df_master['jarak_km'] <= radius_km].copy()
-                            mode_desc = f"Radius {radius_km} KM dari Pusat {selected_val}"
-
-                        st.session_state["center_coords"] = (center_lat, center_lon)
-                        st.session_state["result_df"] = final_result
-                        st.session_state["loc_label"] = f"{kategori_area} {selected_val}"
-                        st.session_state["mode_label"] = mode_desc
-                        st.session_state["generated_pptx_bytes"] = None
+        # --- BLOK LOGIKA UNTUK DATA LIVE BMKG ---
+        if main_category == "Data Live Gempa BMKG":
+            st.sidebar.markdown("📡 **Data BMKG Terkini (Riwayat Terbaru)**")
+            
+            if st.sidebar.button("⬇️ Tarik Riwayat Gempa dari BMKG"):
+                try:
+                    resp = requests.get("https://data.bmkg.go.id/DataMKG/TEWS/gempaterkini.json", timeout=10)
+                    if resp.status_code == 200:
+                        data_bmkg_list = resp.json()['Infogempa']['gempa']
+                        st.session_state["bmkg_list"] = data_bmkg_list
+                        st.sidebar.success("Riwayat data berhasil ditarik!")
                     else:
-                        st.error("Data tidak ditemukan.")
+                        st.sidebar.error("Gagal membaca API BMKG.")
+                except Exception as e:
+                    st.sidebar.error("Gagal terhubung ke server BMKG.")
 
-        elif main_category == "Input Koordinat Manual":
-            col_l, col_r = st.sidebar.columns(2)
-            with col_l: input_lat = st.number_input("Latitude:", format="%.6f", value=-4.512300)
-            with col_r: input_lon = st.number_input("Longitude:", format="%.6f", value=140.412300)
-            radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
+            if "bmkg_list" in st.session_state:
+                gempa_list = st.session_state["bmkg_list"]
+                gempa_options = {f"{g['Tanggal']} {g['Jam']} | {g['Magnitude']} M - {g['Wilayah']}": g for g in gempa_list}
+                
+                selected_gempa_key = st.sidebar.selectbox("Pilih Kejadian Gempa:", list(gempa_options.keys()))
+                data_bmkg = gempa_options[selected_gempa_key]
+                
+                bmkg_tgl_jam = f"{data_bmkg['Tanggal']} {data_bmkg['Jam']}"
+                bmkg_mag = data_bmkg['Magnitude']
+                bmkg_wilayah = data_bmkg['Wilayah']
+                bmkg_kedalaman = data_bmkg['Kedalaman']
+                coords = data_bmkg['Coordinates'].split(",")
+                bmkg_lat, bmkg_lon = float(coords[0]), float(coords[1])
+                
+                st.sidebar.info(
+                    f"📍 **{bmkg_wilayah}**\n\n"
+                    f"🕒 {bmkg_tgl_jam}\n\n"
+                    f"🧲 {bmkg_mag} Mag (Kedalaman {bmkg_kedalaman})\n\n"
+                    f"📌 {bmkg_lat}, {bmkg_lon}"
+                )
+                
+                radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
+                
+                if st.sidebar.button("Hitung Area Dampak BMKG"):
+                    df_master['jarak_km'] = hitung_jarak_haversine_vec(bmkg_lat, bmkg_lon, df_master[lat_col], df_master[lon_col])
+                    
+                    st.session_state.update({
+                        "center_coords": (bmkg_lat, bmkg_lon), 
+                        "result_df": df_master[df_master['jarak_km'] <= radius_km].copy(),
+                        "loc_label": bmkg_wilayah, 
+                        "mode_label": f"Radius {radius_km} KM", 
+                        "active_radius": radius_km, 
+                        "filter_mode": "Radius Jarak (KM) dari Pusat Area",
+                        "jenis_kejadian": "Gempa Bumi",
+                        "detail_kejadian": f"{bmkg_mag} Mag, Kedalaman {bmkg_kedalaman}",
+                        "waktu_kejadian": bmkg_tgl_jam,
+                        "generated_pptx_bytes": None
+                    })
+        else:
+            in_jenis = st.sidebar.text_input("Kejadian:", st.session_state.get("jenis_kejadian", "Gempa Bumi"))
+            in_detail = st.sidebar.text_input("Detail:", st.session_state.get("detail_kejadian", "6.2 Mag"))
+            in_waktu = st.sidebar.text_input("Waktu:", st.session_state.get("waktu_kejadian", "Oktober 2026"))
 
-            if st.sidebar.button("Hitung Area Terdampak"):
-                df_master['jarak_km'] = hitung_jarak_haversine_vec(input_lat, input_lon, df_master[lat_col], df_master[lon_col])
-                st.session_state["center_coords"] = (input_lat, input_lon)
-                st.session_state["result_df"] = df_master[df_master['jarak_km'] <= radius_km].copy()
-                st.session_state["loc_label"] = f"Koordinat ({input_lat}, {input_lon})"
-                st.session_state["mode_label"] = f"Radius {radius_km} KM"
-                st.session_state["generated_pptx_bytes"] = None
+            if main_category == "Pilih Berdasarkan Area / Identitas Site":
+                kategori_area = st.sidebar.selectbox("Pilih Kategori Pencarian:", ["Kabupaten", "Kecamatan", "Desa", "Provinsi", "Site ID"])
+                key_mapping = {
+                    "Provinsi": temukan_kolom(df_master, ['provinsi', 'province', 'prov']),
+                    "Kabupaten": temukan_kolom(df_master, ['kabupaten', 'regency', 'kab']),
+                    "Kecamatan": temukan_kolom(df_master, ['kecamatan', 'district', 'kec']),
+                    "Desa": temukan_kolom(df_master, ['desa', 'kelurahan', 'village']),
+                    "Site ID": 'site_id_clean'
+                }
+                target_col = key_mapping.get(kategori_area)
 
+                if target_col and target_col in df_master.columns:
+                    list_options = sorted(df_master[target_col].dropna().astype(str).unique().tolist())
+                    selected_val = st.sidebar.selectbox(f"Cari/Pilih {kategori_area}:", options=["-- Pilih --"] + list_options)
 
-# --- TAMPILAN DASHBOARD UTAMA ---
+                    filter_mode = st.sidebar.radio("Metode Cakupan Area:", ["Batas Administrasi Murni (Eksak)", "Radius Jarak (KM) dari Pusat Area"])
+                    radius_km = 10
+                    if filter_mode == "Radius Jarak (KM) dari Pusat Area":
+                        radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
+
+                    if st.sidebar.button("Cari & Hitung Dampak") and selected_val != "-- Pilih --":
+                        matched_df = df_master[df_master[target_col].astype(str).str.lower() == selected_val.lower()]
+                        if not matched_df.empty:
+                            center_lat = matched_df[lat_col].mean()
+                            center_lon = matched_df[lon_col].mean()
+                            df_master['jarak_km'] = hitung_jarak_haversine_vec(center_lat, center_lon, df_master[lat_col], df_master[lon_col])
+
+                            if filter_mode == "Batas Administrasi Murni (Eksak)":
+                                final_result = matched_df.copy()
+                                mode_desc = f"Batas Administrasi Murni ({kategori_area}: {selected_val})"
+                                rad = None 
+                            else:
+                                final_result = df_master[df_master['jarak_km'] <= radius_km].copy()
+                                mode_desc = f"Radius {radius_km} KM dari Pusat {selected_val}"
+                                rad = radius_km
+
+                            st.session_state.update({
+                                "center_coords": (center_lat, center_lon),
+                                "result_df": final_result,
+                                "loc_label": f"{kategori_area} {selected_val}",
+                                "mode_label": mode_desc,
+                                "active_radius": rad,
+                                "filter_mode": filter_mode,
+                                "jenis_kejadian": in_jenis, "detail_kejadian": in_detail, "waktu_kejadian": in_waktu,
+                                "generated_pptx_bytes": None
+                            })
+                        else:
+                            st.error("Data tidak ditemukan.")
+
+            elif main_category == "Input Koordinat Manual":
+                col_l, col_r = st.sidebar.columns(2)
+                with col_l: input_lat = st.number_input("Latitude:", format="%.6f", value=-4.512300)
+                with col_r: input_lon = st.number_input("Longitude:", format="%.6f", value=140.412300)
+                radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
+
+                if st.sidebar.button("Hitung Area Terdampak"):
+                    df_master['jarak_km'] = hitung_jarak_haversine_vec(input_lat, input_lon, df_master[lat_col], df_master[lon_col])
+                    st.session_state.update({
+                        "center_coords": (input_lat, input_lon),
+                        "result_df": df_master[df_master['jarak_km'] <= radius_km].copy(),
+                        "loc_label": f"Koordinat ({input_lat}, {input_lon})",
+                        "mode_label": f"Radius {radius_km} KM",
+                        "active_radius": radius_km,
+                        "filter_mode": "Radius Jarak (KM) dari Pusat Area",
+                        "jenis_kejadian": in_jenis, "detail_kejadian": in_detail, "waktu_kejadian": in_waktu,
+                        "generated_pptx_bytes": None
+                    })
+
+# ==========================================
+# 4. TAMPILAN DASHBOARD UTAMA
+# ==========================================
 result_df = st.session_state["result_df"]
 center_coords = st.session_state["center_coords"]
-loc_label = st.session_state["loc_label"]
-mode_label = st.session_state["mode_label"]
+active_radius = st.session_state.get("active_radius", None)
+filter_mode_state = st.session_state.get("filter_mode", "Batas Administrasi Murni (Eksak)")
+
+fig_map = fig_avail = fig_traffic = fig_user = None
 
 if not result_df.empty:
-    st.success(f"**Ringkasan Laporan:** {jenis_kejadian} - {detail_kejadian} | {waktu_kejadian}")
-    st.markdown(f"📍 **Lokasi Fokus:** {loc_label} | **Metode:** {mode_label}")
-    
-    wilayah_info = hitung_ringkasan_wilayah(result_df)
-    site_info = hitung_breakdown_site_transmisi(result_df)
-    power_summary, tower_summary = hitung_breakdown_power_tower(result_df)
+    j_kejadian = st.session_state["jenis_kejadian"]
+    d_kejadian = st.session_state["detail_kejadian"]
+    w_kejadian = st.session_state["waktu_kejadian"]
 
-    status_counts = result_df['status'].astype(str).str.lower().value_counts()
-    bts_down = status_counts.get('down', 0)
-    bts_up = status_counts.get('up', 0)
-    unmonitor = len(result_df) - bts_down - bts_up 
-
-    # --- PERHITUNGAN AGREGASI KESELURUHAN (Filter 24 Jam) ---
-    total_period_mb = result_df['total_traffic_mb_period'].sum() if 'total_traffic_mb_period' in result_df.columns else result_df['traffic_mb'].sum()
-    total_period_gb = total_period_mb / 1024.0
-    total_active_users = int(result_df['max_user'].sum())
+    st.success(f"📍 **Lokasi Fokus:** {st.session_state['loc_label']} | **Metode:** {st.session_state['mode_label']}\n\n**Info Kejadian:** {j_kejadian} - {d_kejadian} | {w_kejadian}")
     
-    timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
-    rata_avail = 0.0
-    label_avail = "Rata-rata Availability"
+    bts_down = len(result_df[result_df['status'].str.lower() == 'down'])
+    bts_up = len(result_df[result_df['status'].str.lower() == 'up'])
+    unmon = len(result_df) - bts_down - bts_up
     
-    if not timeline_df.empty:
-        affected_sites = result_df['site_id_clean'].unique()
-        trend_df_front = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)].copy()
-        
-        if not trend_df_front.empty:
-            trend_df_front['date_only'] = trend_df_front['parsed_time'].dt.date
-            trend_df_front['hour_only'] = trend_df_front['parsed_time'].dt.hour
-            trend_df_front['hours_count'] = trend_df_front.groupby(['site_id_clean', 'date_only'])['hour_only'].transform('nunique')
-            
-            valid_avail_df = trend_df_front[trend_df_front['hours_count'] >= 24]
-            if not valid_avail_df.empty:
-                rata_avail = valid_avail_df['avail_num'].mean()
-                label_avail = "Availability (Data 24 Jam)"
-            else:
-                rata_avail = trend_df_front['avail_num'].mean()
-                label_avail = "Availability (Total Raw)"
-
-    # 1. STATUS JARINGAN TERDAMPAK
-    st.subheader("⚡ Status Jaringan Terdampak (Jam Terakhir)")
+    st.subheader("⚡ Status Jaringan")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Site Terdampak", len(result_df))
+    c1.metric("Total Site Terdampak / Terpilih", len(result_df))
     c2.metric("Site Up", bts_up)
     c3.metric("Site Down", bts_down, delta="- Kritis" if bts_down > 0 else "Normal", delta_color="inverse")
-    c4.metric("Unmonitor", unmonitor)
-
-    st.markdown("---")
-    
-    # 2. KATEGORI & TRANSMISI SITE BAKTI
-    st.subheader("📡 Kategori & Transmisi Site BAKTI")
-    col_4g, col_uso = st.columns(2)
-    with col_4g:
-        st.markdown("#### **Program BTS 4G**")
-        m_4g_total, m_4g_vsat, m_4g_mw = st.columns(3)
-        m_4g_total.metric("Total Site", site_info['n_4g'])
-        m_4g_vsat.metric("Transmisi VSAT", site_info['g4_vsat'])
-        m_4g_mw.metric("Transmisi MW", site_info['g4_mw'])
-    with col_uso:
-        st.markdown("#### **Program BTS USO**")
-        m_uso_total, m_uso_vsat, m_uso_mw = st.columns(3)
-        m_uso_total.metric("Total Site", site_info['n_uso'])
-        m_uso_vsat.metric("Transmisi VSAT", site_info['uso_vsat'])
-        m_uso_mw.metric("Transmisi MW", site_info['uso_mw'])
-
-    st.markdown("---")
-
-    # 3. KATEGORI TOWER-POWER SITE TERDAMPAK
-    st.subheader("🏗️ Kategori Tower-Power Site Terdampak")
-    col_power, col_tower = st.columns(2)
-    with col_power:
-        st.markdown("##### ⚡ Tipe Power (Catu Daya)")
-        if power_summary:
-            p_cols = st.columns(len(power_summary) if len(power_summary) <= 3 else 3)
-            for i, (p_type, p_val) in enumerate(power_summary.items()):
-                with p_cols[i % len(p_cols)]:
-                    st.metric(p_type, p_val)
-        else:
-            st.info("Data Tipe Power tidak ditemukan.")
-
-    with col_tower:
-        st.markdown("##### 🗼 Tipe Tower (Struktur)")
-        if tower_summary:
-            t_cols = st.columns(len(tower_summary) if len(tower_summary) <= 3 else 3)
-            for i, (t_type, t_val) in enumerate(tower_summary.items()):
-                with t_cols[i % len(t_cols)]:
-                    st.metric(t_type, t_val)
-        else:
-            st.info("Data Tipe Tower tidak ditemukan.")
-
-    st.markdown("---")
-    
-    # 4. RINGKASAN PERFORMA & TRAFFIC
-    st.subheader("📊 Ringkasan Performa & Traffic (Periode Terdampak)")
-    agg_c1, agg_c2, agg_c3 = st.columns(3)
-    agg_c1.metric(label_avail, f"{rata_avail:.2f} %")
-    agg_c2.metric("Total Traffic Keseluruhan", f"{total_period_gb:,.2f} GB")
-    agg_c3.metric("Total Active User", f"{total_active_users:,}")
+    c4.metric("Unmonitor", unmon)
 
     st.divider()
-    
-    # 3 TAB (Peta, Trend, Tabel)
-    tab1, tab2, tab3 = st.tabs(["🗺️ Visual Peta Sebaran", "📈 Tren Layanan & Traffic", "📋 Detail Data Site"])
-    
-    with tab1:
-        st.markdown("#### **Peta Sebaran Operasional (Auto-Zoom)**")
-        plotly_df = result_df.copy()
-        plotly_df['Status_Site'] = plotly_df['status'].astype(str).str.capitalize()
-        color_map = {'Up': '#00BFFF', 'Down': '#FF5252', 'Unmonitor': '#FFC107'}
 
-        valid_map_df = plotly_df.dropna(subset=[lat_col, lon_col])
-        if not valid_map_df.empty:
-            mean_lat = float(valid_map_df[lat_col].mean())
-            mean_lon = float(valid_map_df[lon_col].mean())
-
-            fig_map = px.scatter_map(
-                valid_map_df, lat=lat_col, lon=lon_col, color='Status_Site',
-                color_discrete_map=color_map, hover_name='site_id_clean',
-                hover_data={'status': True, 'traffic_mb': ':.2f', 'max_user': True, lat_col: False, lon_col: False},
-                zoom=8, center=dict(lat=mean_lat, lon=mean_lon), height=550
-            )
-
-            if center_coords:
-                center_marker_df = pd.DataFrame({'lat': [center_coords[0]], 'lon': [center_coords[1]]})
-                fig_map.add_scattermap(
-                    lat=center_marker_df['lat'], lon=center_marker_df['lon'],
-                    mode='markers', marker=dict(size=18, color='darkred', symbol='star'),
-                    name=f"Pusat {jenis_kejadian}"
-                )
-
-            map_layers_list = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
-
-            geojson_path = 'indonesia.geojson'
-            if os.path.exists(geojson_path):
-                file_size_mb = os.path.getsize(geojson_path) / (1024 * 1024)
-                if file_size_mb <= 15.0:
-                    try:
-                        with open(geojson_path, 'r', encoding='utf-8') as f:
-                            geojson_kab = json.load(f)
-                        map_layers_list.append({"sourcetype": "geojson", "source": geojson_kab, "type": "line", "color": "rgba(255, 255, 255, 0.6)", "line": {"width": 1.5}, "below": "traces"})
-                    except Exception:
-                        pass
-
-            fig_map.update_layout(map_style="white-bg", map_layers=map_layers_list, margin={"r":0,"t":0,"l":0,"b":0})
-            st.plotly_chart(fig_map, use_container_width=True)
+    t1, t2, t3 = st.tabs(["🗺 Peta Sebaran", "📈 Tren", "📋 Data"])
+    with t1:
+        if filter_mode_state == "Batas Administrasi Murni (Eksak)" or active_radius is None:
+            map_display_df = result_df.copy()
         else:
-            st.info("Data koordinat tidak tersedia untuk menampilkan peta.")
-        
-    with tab2:
-        st.markdown("#### **Tren Layanan Historis pada Area Terdampak**")
-        timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
-        
-        if not timeline_df.empty:
-            affected_sites = result_df['site_id_clean'].unique()
-            trend_df = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)].copy()
-            
-            if not trend_df.empty:
-                trend_grouped = trend_df.groupby('parsed_time').agg(
-                    avg_avail=('avail_num', 'mean'),
-                    total_traffic=('traffic_num', 'sum'),
-                    total_user=('user_num', 'sum')
-                ).reset_index()
-                
-                trend_grouped = trend_grouped.sort_values('parsed_time')
-                trend_grouped['total_traffic_gb'] = trend_grouped['total_traffic'] / 1024.0
-                
-                col_c1, col_c2 = st.columns(2)
-                
-                fig_avail = px.line(
-                    trend_grouped, x='parsed_time', y='avg_avail', 
-                    title='📈 Tren Rata-rata Availability (%)',
-                    labels={'parsed_time': 'Waktu', 'avg_avail': 'Availability (%)'},
-                    markers=True
-                )
-                fig_avail.update_traces(line_color='#2E7D32', marker=dict(size=4))
-                fig_avail.update_layout(
-                    xaxis_tickangle=-45, 
-                    plot_bgcolor='white', 
-                    yaxis=dict(gridcolor='lightgray'),
-                    xaxis=dict(gridcolor='lightgray', showgrid=True, tickformat='%m/%d/%Y %H:%M')
-                )
-                
-                fig_traffic = px.line(
-                    trend_grouped, x='parsed_time', y='total_traffic_gb', 
-                    title='📊 Tren Total Traffic (GB)',
-                    labels={'parsed_time': 'Waktu', 'total_traffic_gb': 'Traffic (GB)'},
-                    markers=True
-                )
-                fig_traffic.update_traces(line_color='#0277BD', marker=dict(size=4))
-                fig_traffic.update_layout(
-                    xaxis_tickangle=-45, 
-                    plot_bgcolor='white', 
-                    yaxis=dict(gridcolor='lightgray'),
-                    xaxis=dict(gridcolor='lightgray', showgrid=True, tickformat='%m/%d/%Y %H:%M')
-                )
-                
-                fig_user = px.line(
-                    trend_grouped, x='parsed_time', y='total_user', 
-                    title='👥 Tren Total Active Users',
-                    labels={'parsed_time': 'Waktu', 'total_user': 'Total User'},
-                    markers=True
-                )
-                fig_user.update_traces(line_color='#F9A825', marker=dict(size=4))
-                fig_user.update_layout(
-                    xaxis_tickangle=-45, 
-                    plot_bgcolor='white', 
-                    yaxis=dict(gridcolor='lightgray'),
-                    xaxis=dict(gridcolor='lightgray', showgrid=True, tickformat='%m/%d/%Y %H:%M')
-                )
-                
-                with col_c1:
-                    st.plotly_chart(fig_avail, use_container_width=True)
-                    st.plotly_chart(fig_user, use_container_width=True)
-                with col_c2:
-                    st.plotly_chart(fig_traffic, use_container_width=True)
-                    
+            if center_coords and 'jarak_km' in df_master.columns:
+                map_display_df = df_master[df_master['jarak_km'] <= (active_radius + 20)].copy()
             else:
-                st.info("Tidak ada riwayat pergerakan data pada site di area ini.")
-        else:
-            st.info("Riwayat timeline tidak tersedia. Pastikan format waktu pada raw data terbaca.")
+                map_display_df = result_df.copy()
 
-    with tab3:
-        st.dataframe(result_df.drop(columns=['jarak_km', 'site_id_clean'], errors='ignore'), use_container_width=True)
+        valid_map_df = map_display_df.dropna(subset=[lat_col, lon_col])
+        if not valid_map_df.empty:
+            auto_zoom = hitung_auto_zoom(valid_map_df[lat_col], valid_map_df[lon_col], active_radius)
+            map_display_df['Status_Site'] = map_display_df['status'].astype(str).str.capitalize()
+            
+            fig_map = px.scatter_map(
+                map_display_df, lat=lat_col, lon=lon_col, color='Status_Site',
+                color_discrete_map={'Up': '#00BFFF', 'Down': '#FF5252', 'Unmonitor': '#FFC107'},
+                zoom=auto_zoom, center=dict(lat=float(valid_map_df[lat_col].mean()), lon=float(valid_map_df[lon_col].mean())), height=600
+            )
+            
+            map_layers = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
+            
+            if center_coords and active_radius is not None:
+                ring_geojson = buat_polygon_lingkaran(center_coords[0], center_coords[1], active_radius)
+                map_layers.append({
+                    "sourcetype": "geojson", "source": ring_geojson, "type": "fill",
+                    "color": "rgba(255, 0, 255, 0.15)", "below": "traces"
+                })
+                map_layers.append({
+                    "sourcetype": "geojson", "source": ring_geojson, "type": "line",
+                    "color": "#FF00FF", "line": {"width": 2}, "below": "traces"
+                })
+                fig_map.add_scattermap(
+                    lat=[center_coords[0]], lon=[center_coords[1]], 
+                    mode='markers', marker=dict(size=25, color='#FF00FF', opacity=0.9), 
+                    name="Pusat Area"
+                )
+
+            fig_map.update_layout(
+                map_style="white-bg", map_layers=map_layers, margin={"r":0,"t":0,"l":0,"b":0},
+                legend=dict(yanchor="bottom", y=0.03, xanchor="left", x=0.03, bgcolor="rgba(255, 255, 255, 0.8)", bordercolor="gray", borderwidth=1, title_text=None)
+            )
+            st.plotly_chart(fig_map, use_container_width=True)
+
+    with t2:
+        trend_df = st.session_state["timeline_df"]
+        if not trend_df.empty:
+            trend_df = trend_df[trend_df['site_id_clean'].isin(result_df['site_id_clean'].unique())]
+            if not trend_df.empty:
+                max_ts = trend_df['parsed_time'].max()
+                trend_df = trend_df[trend_df['parsed_time'] < max_ts]
+                if not trend_df.empty:
+                    tg = trend_df.groupby('parsed_time').agg(a=('avail_num', 'mean'), t=('traffic_num', 'sum'), u=('user_num', 'sum')).reset_index().sort_values('parsed_time')
+                    tg['t'] = tg['t'] / 1024.0
+                    
+                    fig_avail = px.line(tg, x='parsed_time', y='a', title='Tren Availability (%)', markers=True)
+                    fig_avail.update_traces(line_color='#2E7D32', marker=dict(size=4)).update_layout(plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), xaxis=dict(tickangle=-45, tickformat='%m/%d/%Y\n%H:%M', gridcolor='lightgray'), yaxis=dict(gridcolor='lightgray'))
+
+                    fig_traffic = px.line(tg, x='parsed_time', y='t', title='Tren Traffic (GB)', markers=True)
+                    fig_traffic.update_traces(line_color='#0277BD', marker=dict(size=4)).update_layout(plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), xaxis=dict(tickangle=-45, tickformat='%m/%d/%Y\n%H:%M', gridcolor='lightgray'), yaxis=dict(gridcolor='lightgray'))
+
+                    fig_user = px.line(tg, x='parsed_time', y='u', title='Tren Active Users', markers=True)
+                    fig_user.update_traces(line_color='#F9A825', marker=dict(size=4)).update_layout(plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), xaxis=dict(tickangle=-45, tickformat='%m/%d/%Y\n%H:%M', gridcolor='lightgray'), yaxis=dict(gridcolor='lightgray'))
+                    
+                    c_l, c_r = st.columns(2)
+                    with c_l:
+                        st.plotly_chart(fig_avail, use_container_width=True)
+                        st.plotly_chart(fig_user, use_container_width=True)
+                    with c_r:
+                        st.plotly_chart(fig_traffic, use_container_width=True)
+    with t3:
+        st.dataframe(result_df, use_container_width=True)
 
     st.markdown("---")
-    st.subheader("📄 Laporan PowerPoint (PPTX)")
-
-    col_gen, col_down = st.columns([1, 1])
-
+    col_gen, col_down = st.columns(2)
     with col_gen:
         if st.button("🚀 Generate PPT Flash Report", type="primary", use_container_width=True):
-            with st.spinner("Memproses pembuatan slide PowerPoint..."):
+            with st.spinner("Memproses pembuatan slide & Auto-Capture..."):
                 st.session_state["generated_pptx_bytes"] = generate_standard_pptx_report(
-                    jenis_kejadian, detail_kejadian, waktu_kejadian,
-                    loc_label, mode_label, result_df
+                    j_kejadian, d_kejadian, w_kejadian, st.session_state["loc_label"], st.session_state["mode_label"], result_df,
+                    fig_map=fig_map, fig_avail=fig_avail, fig_traffic=fig_traffic, fig_user=fig_user
                 )
             st.success("File PPTX Berhasil Dibuat!")
-
     with col_down:
+        # Mengambil nilai loc_label dengan aman dari session_state jika belum ada
+        current_loc = st.session_state.get("loc_label", "Area_Terdampak")
+        safe_lokasi = str(current_loc).replace('/', '_').replace(':', '_').replace(' ', '_')
+        
         if st.session_state["generated_pptx_bytes"] is not None:
-            safe_lokasi = loc_label.replace('/', '_').replace(':', '_')
-            
             st.download_button(
                 label="📥 Download File PPTX",
                 data=st.session_state["generated_pptx_bytes"],
-                file_name=f"Flash_Report_{jenis_kejadian}_{safe_lokasi}.pptx",
+                file_name=f"Flash Performance Report {safe_lokasi}.pptx",
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 use_container_width=True
             )
