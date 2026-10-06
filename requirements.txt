@@ -4,3 +4,4 @@ numpy
 plotly
 python-pptx
 openpyxl
+kaleido
