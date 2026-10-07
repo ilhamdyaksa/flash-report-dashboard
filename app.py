@@ -144,6 +144,16 @@ def hitung_breakdown_site_transmisi(df):
         'g4_vsat': g4_vsat, 'g4_mw': g4_mw
     }
 
+def hitung_breakdown_power_tower(df):
+    power_summary, tower_summary = {}, {}
+    power_col = df.columns[17] if len(df.columns) > 17 else temukan_kolom(df, ['tipe power', 'power', 'sumber_daya', 'catergory_power', 'tipe_power', 'catu_daya'])
+    tower_col = df.columns[18] if len(df.columns) > 18 else temukan_kolom(df, ['tipe tower', 'tower', 'tipe_tower', 'tower_type', 'jenis_tower', 'structure'])
+    if power_col and power_col in df.columns:
+        power_summary = df[power_col].astype(str).str.strip().str.title().value_counts().to_dict()
+    if tower_col and tower_col in df.columns:
+        tower_summary = df[tower_col].astype(str).str.strip().str.upper().value_counts().to_dict()
+    return power_summary, tower_summary
+
 def replace_placeholder_shape_with_image(slide, img_bytes, target_keys, force_width=None, force_height=None):
     target_keys_upper = [k.upper() for k in target_keys]
     for shape in list(slide.shapes):
@@ -186,14 +196,22 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
 
     wilayah_info = hitung_ringkasan_wilayah(df_result)
     site_info = hitung_breakdown_site_transmisi(df_result)
+    power_summary, tower_summary = hitung_breakdown_power_tower(df_result)
     
-    # --- TAMBAHAN PERHITUNGAN SPESIFIK UP & DOWN ---
+    # --- HITUNG SPESIFIK UP, DOWN, UNMONITOR ---
     df_up = df_result[df_result['status'].str.lower() == 'up']
     df_down = df_result[df_result['status'].str.lower() == 'down']
     up_stats = hitung_breakdown_site_transmisi(df_up)
     down_stats = hitung_breakdown_site_transmisi(df_down)
     unmon_stats = hitung_breakdown_site_transmisi(df_result[~df_result['status'].str.lower().isin(['up', 'down'])])
     
+    # Pisahkan Power & Tower per program
+    cat_col = temukan_kolom(df_result, ['program', 'kategori', 'category', 'jenis_bts', 'bts_type', 'tipe_bts', 'tipe site'])
+    df_uso = df_result[df_result[cat_col].astype(str).str.upper().str.contains('USO', na=False)] if cat_col else pd.DataFrame()
+    df_4g = df_result[df_result[cat_col].astype(str).str.upper().str.contains('4G', na=False)] if cat_col else pd.DataFrame()
+    p_4g, t_4g = hitung_breakdown_power_tower(df_4g)
+    p_uso, t_uso = hitung_breakdown_power_tower(df_uso)
+
     replacement_dict = {
         "{{jenis_kejadian}}": str(jenis_kejadian),
         "{{detail_kejadian}}": str(detail_kejadian),
@@ -219,21 +237,25 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{uso_vsat}}": str(site_info['uso_vsat']),
         "{{uso_mw}}": str(site_info['uso_mw']),
 
-        
-        # --- KAMUS PLACEHOLDER BARU YANG ANDA TANYAKAN ---
+        # 14 Kunci Detail Breakdown
         "{{4g_up}}": str(up_stats['n_4g']),
         "{{uso_up}}": str(up_stats['n_uso']),
         "{{4g_up_vsat}}": str(up_stats['g4_vsat']),
         "{{4g_up_mw}}": str(up_stats['g4_mw']),
         "{{uso_up_vsat}}": str(up_stats['uso_vsat']),
         "{{uso_up_mw}}": str(up_stats['uso_mw']),
-        "{{4g_down}}": str(down_stats['n_4g']),
-        "{{uso_down}}": str(down_stats['n_uso']),
         "{{4g_down_vsat}}": str(down_stats['g4_vsat']),
         "{{4g_down_mw}}": str(down_stats['g4_mw']),
         "{{uso_down_vsat}}": str(down_stats['uso_vsat']),
         "{{uso_down_mw}}": str(down_stats['uso_mw']),
-        # ... (placeholder lainnya) ...
+        "{{tipe_power}}": ", ".join([f"{k}: {v}" for k, v in power_summary.items()]) if power_summary else "-",
+        "{{tipe_tower}}": ", ".join([f"{k}: {v}" for k, v in tower_summary.items()]) if tower_summary else "-",
+        "{{tipe_power_4g}}": ", ".join([f"{k}: {v}" for k, v in p_4g.items()]) if p_4g else "-",
+        "{{tipe_power_uso}}": ", ".join([f"{k}: {v}" for k, v in p_uso.items()]) if p_uso else "-",
+        "{{tipe_tower_4g}}": ", ".join([f"{k}: {v}" for k, v in t_4g.items()]) if t_4g else "-",
+        "{{tipe_tower_uso}}": ", ".join([f"{k}: {v}" for k, v in t_uso.items()]) if t_uso else "-",
+        "{{4g_down}}": str(down_stats['n_4g']),
+        "{{uso_down}}": str(down_stats['n_uso']),
         "{{4g_unmon_vsat}}": str(unmon_stats['g4_vsat']),
         "{{4g_unmon_mw}}": str(unmon_stats['g4_mw']),
         "{{uso_unmon_vsat}}": str(unmon_stats['uso_vsat']),
@@ -245,38 +267,48 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
             for paragraph in shape.text_frame.paragraphs:
                 p_text = paragraph.text.replace('\u200b', '').replace('\u200d', '')
                 if any(key in p_text for key in replacement_dict.keys()):
-                    for key, val in replacement_dict.items(): p_text = p_text.replace(key, val)
+                    for key, val in replacement_dict.items():
+                        p_text = p_text.replace(key, val)
                     if len(paragraph.runs) > 0:
-                        for i in range(len(paragraph.runs)): paragraph.runs[i].text = "" 
+                        for i in range(len(paragraph.runs)):
+                            paragraph.runs[i].text = "" 
                         paragraph.runs[0].text = p_text 
-                    else: paragraph.text = p_text
+                    else:
+                        paragraph.text = p_text
         elif shape.has_table:
             for row in shape.table.rows:
                 for cell in row.cells:
-                    for paragraph in cell.text_frame.paragraphs: proses_shape(cell)
+                    for paragraph in cell.text_frame.paragraphs:
+                        proses_shape(cell)
         elif shape.shape_type == 6: 
-            for sub_shape in shape.shapes: proses_shape(sub_shape)
+            for sub_shape in shape.shapes:
+                proses_shape(sub_shape)
 
     for slide in prs.slides:
-        for shape in slide.shapes: proses_shape(shape)
+        for shape in slide.shapes:
+            proses_shape(shape)
 
-    if len(prs.slides) >= 2 and fig_map is not None:
-        slide_map = prs.slides[1]
-        map_bytes = BytesIO(pio.to_image(fig_map, format="png", width=800, height=676, scale=2))
-        if not replace_placeholder_shape_with_image(slide_map, map_bytes, ["PH_MAP", "PETA", "MAP"], force_width=Inches(5.88), force_height=Inches(4.97)):
-            slide_map.shapes.add_picture(map_bytes, Inches(0.5), Inches(1.5), width=Inches(5.88), height=Inches(4.97))
+    # Auto Capture Gambar dengan Pelindung try-except
+    try:
+        if len(prs.slides) >= 2 and fig_map is not None:
+            slide_map = prs.slides[1]
+            map_bytes = BytesIO(pio.to_image(fig_map, format="png", width=800, height=676, scale=2))
+            if not replace_placeholder_shape_with_image(slide_map, map_bytes, ["PH_MAP", "PETA", "MAP"], force_width=Inches(5.88), force_height=Inches(4.97)):
+                slide_map.shapes.add_picture(map_bytes, Inches(0.5), Inches(1.5), width=Inches(5.88), height=Inches(4.97))
 
-    if len(prs.slides) >= 3:
-        slide_chart = prs.slides[2]
-        if fig_avail is not None:
-            avail_bytes = BytesIO(pio.to_image(fig_avail, format="png", width=800, height=450, scale=2))
-            replace_placeholder_shape_with_image(slide_chart, avail_bytes, ["PH_AVAIL"])
-        if fig_traffic is not None:
-            traffic_bytes = BytesIO(pio.to_image(fig_traffic, format="png", width=800, height=450, scale=2))
-            replace_placeholder_shape_with_image(slide_chart, traffic_bytes, ["PH_TRAFFIC"])
-        if fig_user is not None:
-            user_bytes = BytesIO(pio.to_image(fig_user, format="png", width=800, height=450, scale=2))
-            replace_placeholder_shape_with_image(slide_chart, user_bytes, ["PH_USER"])
+        if len(prs.slides) >= 3:
+            slide_chart = prs.slides[2]
+            if fig_avail is not None:
+                avail_bytes = BytesIO(pio.to_image(fig_avail, format="png", width=800, height=450, scale=2))
+                replace_placeholder_shape_with_image(slide_chart, avail_bytes, ["PH_AVAIL"])
+            if fig_traffic is not None:
+                traffic_bytes = BytesIO(pio.to_image(fig_traffic, format="png", width=800, height=450, scale=2))
+                replace_placeholder_shape_with_image(slide_chart, traffic_bytes, ["PH_TRAFFIC"])
+            if fig_user is not None:
+                user_bytes = BytesIO(pio.to_image(fig_user, format="png", width=800, height=450, scale=2))
+                replace_placeholder_shape_with_image(slide_chart, user_bytes, ["PH_USER"])
+    except Exception as e:
+        print(f"Warning: Render grafik ke PPTX dilewati: {e}")
 
     buffer = BytesIO()
     prs.save(buffer)
@@ -293,7 +325,7 @@ if "center_coords" not in st.session_state: st.session_state["center_coords"] = 
 if "loc_label" not in st.session_state: st.session_state["loc_label"] = ""
 if "mode_label" not in st.session_state: st.session_state["mode_label"] = ""
 if "active_radius" not in st.session_state: st.session_state["active_radius"] = None
-if "filter_mode" not in st.session_state: st.session_state["filter_mode"] = "Batas Administrasi"
+if "filter_mode" not in st.session_state: st.session_state["filter_mode"] = "Batas Administrasi Murni (Eksak)"
 if "jenis_kejadian" not in st.session_state: st.session_state["jenis_kejadian"] = "Gempa Bumi"
 if "detail_kejadian" not in st.session_state: st.session_state["detail_kejadian"] = "6.2 Mag"
 if "waktu_kejadian" not in st.session_state: st.session_state["waktu_kejadian"] = "Oktober 2026"
@@ -308,8 +340,8 @@ st.title("Dashboard Laporan Dampak Kejadian")
 st.caption("Kementerian Komunikasi dan Digital — BAKTI")
 
 st.sidebar.header("1. Upload Data Set")
-file_master = st.sidebar.file_uploader("1. Master Site:", type=["xlsx", "xls", "csv"])
-file_status = st.sidebar.file_uploader("2. Laporan OSS:", type=["xlsx", "xls", "csv"])
+file_master = st.sidebar.file_uploader("1. Master Site (Koordinat):", type=["xlsx", "xls", "csv"])
+file_status = st.sidebar.file_uploader("2. Laporan OSS (Raw Data):", type=["xlsx", "xls", "csv"])
 
 df_master = pd.DataFrame()
 if file_master is not None:
@@ -328,7 +360,8 @@ if file_master is not None:
             if site_col_status and avail_col and len(df_status.columns) >= 2:
                 df_status['site_id_clean'] = df_status[site_col_status].astype(str).str.strip().str.upper()
                 for col_dup in ['status', 'traffic_mb', 'total_traffic_mb_period', 'max_user']:
-                    if col_dup in df_master.columns: df_master = df_master.drop(columns=[col_dup])
+                    if col_dup in df_master.columns: 
+                        df_master = df_master.drop(columns=[col_dup])
 
                 df_status['avail_num'] = clean_to_numeric(df_status[avail_col])
                 df_status['traffic_num'] = clean_to_numeric(df_status[traffic_col]) if traffic_col else 0.0
@@ -349,14 +382,23 @@ if file_master is not None:
                 
                 df_status['hours_count'] = df_status.groupby(['site_id_clean', 'date_str'])[df_status.columns[1]].transform('nunique')
                 df_valid = df_status[df_status['hours_count'] >= 24].copy()
-                if df_valid.empty: df_valid = df_status.copy()
+                if df_valid.empty: 
+                    df_valid = df_status.copy()
 
-                df_metrics = df_valid.groupby(['site_id_clean', 'date_str']).agg(total_traffic_day=('traffic_num', 'sum'), peak_user_day=('user_num', 'max')).reset_index().groupby('site_id_clean').agg(traffic_mb=('total_traffic_day', 'mean'), total_traffic_mb_period=('total_traffic_day', 'sum'), max_user=('peak_user_day', 'mean')).reset_index()
+                df_metrics = df_valid.groupby(['site_id_clean', 'date_str']).agg(
+                    total_traffic_day=('traffic_num', 'sum'),
+                    peak_user_day=('user_num', 'max')
+                ).reset_index().groupby('site_id_clean').agg(
+                    traffic_mb=('total_traffic_day', 'mean'),
+                    total_traffic_mb_period=('total_traffic_day', 'sum'),
+                    max_user=('peak_user_day', 'mean')
+                ).reset_index()
 
                 df_processed = pd.merge(df_last[['site_id_clean', 'status']], df_metrics, on='site_id_clean', how='left')
                 df_master = pd.merge(df_master, df_processed, on='site_id_clean', how='left')
                 df_master['status'] = df_master['status'].fillna('Unmonitor')
-                for col in ['traffic_mb', 'total_traffic_mb_period', 'max_user']: df_master[col] = df_master[col].fillna(0.0)
+                for col in ['traffic_mb', 'total_traffic_mb_period', 'max_user']: 
+                    df_master[col] = df_master[col].fillna(0.0)
                 st.sidebar.success("Berhasil! Data siap.")
         else:
             df_master['status'] = 'Unmonitor'
@@ -378,7 +420,7 @@ if not df_master.empty and 'status' in df_master.columns:
         df_master[lat_col] = pd.to_numeric(df_master[lat_col], errors='coerce')
         df_master[lon_col] = pd.to_numeric(df_master[lon_col], errors='coerce')
 
-        # --- BLOK LOGIKA UNTUK DATA LIVE BMKG ---
+        # --- DATA LIVE BMKG ---
         if main_category == "Data Live Gempa BMKG":
             st.sidebar.markdown("📡 **Data BMKG Terkini (Riwayat Terbaru)**")
             
@@ -620,7 +662,6 @@ if not result_df.empty:
                 )
             st.success("File PPTX Berhasil Dibuat!")
     with col_down:
-        # Mengambil nilai loc_label dengan aman dari session_state jika belum ada
         current_loc = st.session_state.get("loc_label", "Area_Terdampak")
         safe_lokasi = str(current_loc).replace('/', '_').replace(':', '_').replace(' ', '_')
         
