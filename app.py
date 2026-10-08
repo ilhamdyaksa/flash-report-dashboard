@@ -11,6 +11,8 @@ import plotly.express as px
 import plotly.io as pio
 from pptx import Presentation
 from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
 import streamlit as st
 
 # ==========================================
@@ -168,9 +170,88 @@ def replace_placeholder_shape_with_image(slide, img_bytes, target_keys, force_wi
             return True
     return False
 
+def insert_kabupaten_table_to_pptx(slide, kab_summary, left=None, top=None, width=None):
+    rows = len(kab_summary) + 2
+    cols = 9
+    
+    pos_left = left if (left is not None and left < Inches(5.0)) else Inches(0.8)
+    pos_top = top if top is not None else Inches(1.5)
+    
+    if width is not None and width >= Inches(6.5):
+        pos_width = width
+    else:
+        pos_width = Inches(7.5)
+
+    pos_height = Inches(0.28 * rows)
+
+    table_shape = slide.shapes.add_table(rows, cols, pos_left, pos_top, pos_width, pos_height)
+    table = table_shape.table
+
+    col_weights = [0.06, 0.30, 0.09, 0.09, 0.09, 0.09, 0.09, 0.09, 0.09]
+    for i, w_ratio in enumerate(col_weights):
+        table.columns[i].width = int(pos_width * w_ratio)
+
+    header_bg_color = RGBColor(0, 153, 153)  # #009999
+    header_text_color = RGBColor(255, 255, 255)
+
+    def format_cell(cell, text, bold=False, size_pt=8, color_rgb=None, bg_rgb=None):
+        cell.text = text
+        cell.margin_left = Inches(0.04)
+        cell.margin_right = Inches(0.04)
+        cell.margin_top = Inches(0.02)
+        cell.margin_bottom = Inches(0.02)
+        
+        if bg_rgb:
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = bg_rgb
+            
+        p = cell.text_frame.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        p.font.bold = bold
+        p.font.size = Pt(size_pt)
+        if color_rgb:
+            p.font.color.rgb = color_rgb
+
+    # Header Baris 1
+    h1 = ["No", "Kabupaten", "Total Site", "BTS 4G", "BTS USO", "Status BTS 4G", "", "Status BTS USO", ""]
+    for c_idx, text in enumerate(h1):
+        format_cell(table.cell(0, c_idx), text, bold=True, size_pt=9, color_rgb=header_text_color, bg_rgb=header_bg_color)
+
+    table.cell(0, 5).merge(table.cell(0, 6))
+    table.cell(0, 7).merge(table.cell(0, 8))
+
+    # Header Baris 2
+    h2 = ["", "", "", "", "", "Site Up", "Site Down", "Site Up", "Site Down"]
+    for c_idx, text in enumerate(h2):
+        format_cell(table.cell(1, c_idx), text, bold=True, size_pt=8, color_rgb=header_text_color, bg_rgb=header_bg_color)
+
+    for c_idx in range(5):
+        table.cell(0, c_idx).merge(table.cell(1, c_idx))
+
+    # Isi Baris Data
+    for r_idx, row in kab_summary.iterrows():
+        row_pos = r_idx + 2
+        vals = [
+            str(r_idx + 1),
+            str(row['Kabupaten']),
+            str(int(row['Total Site'])),
+            str(int(row['BTS 4G'])),
+            str(int(row['BTS USO'])),
+            str(int(row['4G_Up'])),
+            str(int(row['4G_Down'])),
+            str(int(row['USO_Up'])),
+            str(int(row['USO_Down']))
+        ]
+        
+        row_bg = RGBColor(248, 250, 251) if (r_idx % 2 == 1) else RGBColor(255, 255, 255)
+        
+        for c_idx, val in enumerate(vals):
+            c_color = RGBColor(211, 47, 47) if (c_idx in [6, 8] and int(val) > 0) else None
+            is_bold = True if (c_idx in [1, 6, 8] and (c_idx == 1 or int(val) > 0)) else False
+            format_cell(table.cell(row_pos, c_idx), val, bold=is_bold, size_pt=8, color_rgb=c_color, bg_rgb=row_bg)
+
 def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadian, loc_label, mode_label, df_result, fig_map=None, fig_avail=None, fig_traffic=None, fig_user=None):
     template_path = "template_baku.pptx"
-    
     if not os.path.exists(template_path) and os.path.exists("template_baku.pptx.pptx"):
         template_path = "template_baku.pptx.pptx"
         
@@ -180,7 +261,7 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         prs = Presentation()
         prs.slide_width = Inches(13.333)
         prs.slide_height = Inches(7.5)
-        for _ in range(3):
+        for _ in range(4):
             prs.slides.add_slide(prs.slide_layouts[6])
 
     status_counts = df_result['status'].astype(str).str.lower().value_counts()
@@ -198,19 +279,59 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
     site_info = hitung_breakdown_site_transmisi(df_result)
     power_summary, tower_summary = hitung_breakdown_power_tower(df_result)
     
-    # --- HITUNG SPESIFIK UP, DOWN, UNMONITOR ---
     df_up = df_result[df_result['status'].str.lower() == 'up']
     df_down = df_result[df_result['status'].str.lower() == 'down']
     up_stats = hitung_breakdown_site_transmisi(df_up)
     down_stats = hitung_breakdown_site_transmisi(df_down)
     unmon_stats = hitung_breakdown_site_transmisi(df_result[~df_result['status'].str.lower().isin(['up', 'down'])])
     
-    # Pisahkan Power & Tower per program
     cat_col = temukan_kolom(df_result, ['program', 'kategori', 'category', 'jenis_bts', 'bts_type', 'tipe_bts', 'tipe site'])
     df_uso = df_result[df_result[cat_col].astype(str).str.upper().str.contains('USO', na=False)] if cat_col else pd.DataFrame()
     df_4g = df_result[df_result[cat_col].astype(str).str.upper().str.contains('4G', na=False)] if cat_col else pd.DataFrame()
     p_4g, t_4g = hitung_breakdown_power_tower(df_4g)
     p_uso, t_uso = hitung_breakdown_power_tower(df_uso)
+
+    total_monitored = bts_up + bts_down
+    avg_avail_val = (bts_up / total_monitored * 100.0) if total_monitored > 0 else 0.0
+
+    kab_col_summary = temukan_kolom(df_result, ['kabupaten', 'regency', 'kab', 'kab/kota'])
+    top_kab_name = "-"
+    top_kab_down_total = 0
+    top_kab_4g_down = 0
+    top_kab_uso_down = 0
+
+    if kab_col_summary and kab_col_summary in df_result.columns and bts_down > 0:
+        if not df_down.empty:
+            cat_col_detect = temukan_kolom(df_down, ['program', 'kategori', 'category', 'jenis_bts', 'bts_type'])
+            top_kab_series = df_down[kab_col_summary].value_counts()
+            if not top_kab_series.empty:
+                top_kab_name = str(top_kab_series.index[0])
+                top_kab_down_total = int(top_kab_series.iloc[0])
+                df_top_kab = df_down[df_down[kab_col_summary] == top_kab_name]
+                if cat_col_detect and cat_col_detect in df_top_kab.columns:
+                    cat_str = df_top_kab[cat_col_detect].astype(str).str.upper()
+                    top_kab_4g_down = len(df_top_kab[cat_str.str.contains('4G', na=False)])
+                    top_kab_uso_down = len(df_top_kab[cat_str.str.contains('USO', na=False)])
+
+    # --- AMBIL TIMESTAMP RAW DATA TERAKHIR ---
+    timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
+    str_timestamp_raw = "-"
+    str_tgl_raw = "-"
+    str_jam_raw = "-"
+
+    if not timeline_df.empty:
+        unique_times = sorted(timeline_df['parsed_time'].dropna().unique())
+        if len(unique_times) >= 2:
+            latest_raw_time = unique_times[-2]
+        elif len(unique_times) == 1:
+            latest_raw_time = unique_times[-1]
+        else:
+            latest_raw_time = None
+
+        if latest_raw_time is not None:
+            str_timestamp_raw = latest_raw_time.strftime("%d/%m/%Y %H:%M WIB")
+            str_tgl_raw = latest_raw_time.strftime("%d/%m/%Y")
+            str_jam_raw = latest_raw_time.strftime("%H:%M WIB")
 
     replacement_dict = {
         "{{jenis_kejadian}}": str(jenis_kejadian),
@@ -218,6 +339,10 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{waktu_kejadian}}": str(waktu_kejadian),
         "{{lokasi}}": str(loc_label),
         "{{mode}}": str(mode_label),
+        "{{timestamp_data}}": str_timestamp_raw,
+        "{{timestamp_raw}}": str_timestamp_raw,
+        "{{tgl_raw}}": str_tgl_raw,
+        "{{jam_raw}}": str_jam_raw,
         "{{total_site}}": str(len(df_result)),
         "{{site_up}}": str(bts_up),
         "{{site_down}}": str(bts_down),
@@ -226,6 +351,7 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{daily_traffic_mb}}": f"{total_traffic_mb:,.2f}",
         "{{daily_traffic_gb}}": f"{total_traffic_gb:,.2f}",
         "{{active_users}}": f"{total_active_users:,}",
+        "{{avg_avail}}": f"{avg_avail_val:.2f}%",
         "{{n_prov}}": str(wilayah_info['n_prov']),
         "{{n_kab}}": str(wilayah_info['n_kab']),
         "{{n_kec}}": str(wilayah_info['n_kec']),
@@ -236,8 +362,6 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{n_uso}}": str(site_info['n_uso']),
         "{{uso_vsat}}": str(site_info['uso_vsat']),
         "{{uso_mw}}": str(site_info['uso_mw']),
-
-        # 14 Kunci Detail Breakdown
         "{{4g_up}}": str(up_stats['n_4g']),
         "{{uso_up}}": str(up_stats['n_uso']),
         "{{4g_up_vsat}}": str(up_stats['g4_vsat']),
@@ -248,6 +372,10 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         "{{4g_down_mw}}": str(down_stats['g4_mw']),
         "{{uso_down_vsat}}": str(down_stats['uso_vsat']),
         "{{uso_down_mw}}": str(down_stats['uso_mw']),
+        "{{top_kab_down}}": str(top_kab_name),
+        "{{top_kab_down_count}}": str(top_kab_down_total),
+        "{{top_kab_down_4g}}": str(top_kab_4g_down),
+        "{{top_kab_down_uso}}": str(top_kab_uso_down),
         "{{tipe_power}}": ", ".join([f"{k}: {v}" for k, v in power_summary.items()]) if power_summary else "-",
         "{{tipe_tower}}": ", ".join([f"{k}: {v}" for k, v in tower_summary.items()]) if tower_summary else "-",
         "{{tipe_power_4g}}": ", ".join([f"{k}: {v}" for k, v in p_4g.items()]) if p_4g else "-",
@@ -278,8 +406,7 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         elif shape.has_table:
             for row in shape.table.rows:
                 for cell in row.cells:
-                    for paragraph in cell.text_frame.paragraphs:
-                        proses_shape(cell)
+                    proses_shape(cell)
         elif shape.shape_type == 6: 
             for sub_shape in shape.shapes:
                 proses_shape(sub_shape)
@@ -288,7 +415,6 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
         for shape in slide.shapes:
             proses_shape(shape)
 
-    # Auto Capture Gambar dengan Pelindung try-except
     try:
         if len(prs.slides) >= 2 and fig_map is not None:
             slide_map = prs.slides[1]
@@ -309,6 +435,60 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
                 replace_placeholder_shape_with_image(slide_chart, user_bytes, ["PH_USER"])
     except Exception as e:
         print(f"Warning: Render grafik ke PPTX dilewati: {e}")
+
+    # ==========================================
+    # SLIDE 4: INSERT TABEL KE PPT
+    # ==========================================
+    kab_col_tbl = temukan_kolom(df_result, ['kabupaten', 'regency', 'kab', 'kab/kota'])
+    cat_col_tbl = temukan_kolom(df_result, ['program', 'kategori', 'category', 'jenis_bts', 'bts_type', 'tipe_bts', 'tipe site', 'tipe_site'])
+    
+    if kab_col_tbl and kab_col_tbl in df_result.columns:
+        df_calc_ppt = df_result.copy()
+        if cat_col_tbl and cat_col_tbl in df_calc_ppt.columns:
+            cat_upper = df_calc_ppt[cat_col_tbl].astype(str).str.upper()
+            df_calc_ppt['is_4g'] = cat_upper.str.contains('4G', na=False)
+            df_calc_ppt['is_uso'] = cat_upper.str.contains('USO', na=False)
+        else:
+            df_calc_ppt['is_4g'] = False
+            df_calc_ppt['is_uso'] = False
+
+        st_lower = df_calc_ppt['status'].astype(str).str.lower()
+        df_calc_ppt['is_up'] = st_lower == 'up'
+        df_calc_ppt['is_down'] = st_lower == 'down'
+
+        kab_summary_ppt = df_calc_ppt.groupby(kab_col_tbl).apply(lambda g: pd.Series({
+            'Total Site': len(g),
+            'BTS 4G': len(g[g['is_4g']]),
+            'BTS USO': len(g[g['is_uso']]),
+            '4G_Up': len(g[g['is_4g'] & g['is_up']]),
+            '4G_Down': len(g[g['is_4g'] & g['is_down']]),
+            'USO_Up': len(g[g['is_uso'] & g['is_up']]),
+            'USO_Down': len(g[g['is_uso'] & g['is_down']]),
+        })).reset_index().rename(columns={kab_col_tbl: 'Kabupaten'})
+
+        kab_summary_ppt = kab_summary_ppt.sort_values(by=['4G_Down', 'USO_Down', 'Total Site'], ascending=[False, False, False]).reset_index(drop=True)
+
+        target_slide = prs.slides[3] if len(prs.slides) >= 4 else prs.slides.add_slide(prs.slide_layouts[6])
+        target_shape = None
+
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                s_name = shape.name.strip().upper()
+                s_text = shape.text_frame.text.strip().upper() if shape.has_text_frame else ""
+                if "PH_TABEL" in s_name or "PH_TABEL" in s_text or "PH_TABLE" in s_name:
+                    target_shape = shape
+                    target_slide = slide
+                    break
+            if target_shape:
+                break
+
+        if target_shape:
+            pos_left, pos_top, pos_width = target_shape.left, target_shape.top, target_shape.width
+            sp = target_shape._element
+            sp.getparent().remove(sp)
+            insert_kabupaten_table_to_pptx(target_slide, kab_summary_ppt, left=pos_left, top=pos_top, width=pos_width)
+        else:
+            insert_kabupaten_table_to_pptx(target_slide, kab_summary_ppt)
 
     buffer = BytesIO()
     prs.save(buffer)
@@ -403,7 +583,6 @@ if file_master is not None:
         else:
             df_master['status'] = 'Unmonitor'
 
-
 st.sidebar.markdown("---")
 st.sidebar.header("3. Parameter Area Terdampak")
 
@@ -420,7 +599,6 @@ if not df_master.empty and 'status' in df_master.columns:
         df_master[lat_col] = pd.to_numeric(df_master[lat_col], errors='coerce')
         df_master[lon_col] = pd.to_numeric(df_master[lon_col], errors='coerce')
 
-        # --- DATA LIVE BMKG ---
         if main_category == "Data Live Gempa BMKG":
             st.sidebar.markdown("📡 **Data BMKG Terkini (Riwayat Terbaru)**")
             
@@ -563,21 +741,111 @@ if not result_df.empty:
     w_kejadian = st.session_state["waktu_kejadian"]
 
     st.success(f"📍 **Lokasi Fokus:** {st.session_state['loc_label']} | **Metode:** {st.session_state['mode_label']}\n\n**Info Kejadian:** {j_kejadian} - {d_kejadian} | {w_kejadian}")
-    
-    bts_down = len(result_df[result_df['status'].str.lower() == 'down'])
-    bts_up = len(result_df[result_df['status'].str.lower() == 'up'])
-    unmon = len(result_df) - bts_down - bts_up
-    
-    st.subheader("⚡ Status Jaringan")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Site Terdampak / Terpilih", len(result_df))
-    c2.metric("Site Up", bts_up)
-    c3.metric("Site Down", bts_down, delta="- Kritis" if bts_down > 0 else "Normal", delta_color="inverse")
-    c4.metric("Unmonitor", unmon)
+
+    # =========================================================================
+    # A. GAMBARAN OVERALL
+    # =========================================================================
+    st.markdown("### 📊 1. Ringkasan Keseluruhan (Overall Status)")
+
+    df_up = result_df[result_df['status'].str.lower() == 'up']
+    df_down = result_df[result_df['status'].str.lower() == 'down']
+    df_unmon = result_df[~result_df['status'].str.lower().isin(['up', 'down'])]
+
+    total_stats = hitung_breakdown_site_transmisi(result_df)
+    up_stats = hitung_breakdown_site_transmisi(df_up)
+    down_stats = hitung_breakdown_site_transmisi(df_down)
+    unmon_stats = hitung_breakdown_site_transmisi(df_unmon)
+
+    st.caption("TOTAL KESELURUHAN SITE")
+    r1_c1, r1_c2, r1_c3 = st.columns([1, 1.5, 1.5])
+    r1_c1.metric("Total Site", len(result_df))
+    r1_c2.metric("Total BTS 4G", f"{total_stats['n_4g']} Site", f"VSAT: {total_stats['g4_vsat']} | MW: {total_stats['g4_mw']}")
+    r1_c3.metric("Total BTS USO", f"{total_stats['n_uso']} Site", f"VSAT: {total_stats['uso_vsat']} | MW: {total_stats['uso_mw']}")
+
+    st.caption("STATUS SITE UP (NORMAL)")
+    r2_c1, r2_c2, r2_c3 = st.columns([1, 1.5, 1.5])
+    r2_c1.metric("Site UP (Total)", len(df_up))
+    r2_c2.metric("4G UP", f"{up_stats['n_4g']} Site", f"VSAT: {up_stats['g4_vsat']} | MW: {up_stats['g4_mw']}")
+    r2_c3.metric("USO UP", f"{up_stats['n_uso']} Site", f"VSAT: {up_stats['uso_vsat']} | MW: {up_stats['uso_mw']}")
+
+    st.caption("STATUS SITE DOWN (KRITIS)")
+    r3_c1, r3_c2, r3_c3 = st.columns([1, 1.5, 1.5])
+    r3_c1.metric("Site DOWN (Total)", len(df_down), delta="- Down" if len(df_down) > 0 else "Normal", delta_color="inverse")
+    r3_c2.metric("4G DOWN", f"{down_stats['n_4g']} Site", f"VSAT: {down_stats['g4_vsat']} | MW: {down_stats['g4_mw']}", delta_color="inverse")
+    r3_c3.metric("USO DOWN", f"{down_stats['n_uso']} Site", f"VSAT: {down_stats['uso_vsat']} | MW: {down_stats['uso_mw']}", delta_color="inverse")
+
+    if len(df_unmon) > 0:
+        st.caption("STATUS SITE UNMONITOR")
+        r4_c1, r4_c2, r4_c3 = st.columns([1, 1.5, 1.5])
+        r4_c1.metric("Unmonitor (Total)", len(df_unmon))
+        r4_c2.metric("4G Unmonitor", f"{unmon_stats['n_4g']} Site", f"VSAT: {unmon_stats['g4_vsat']} | MW: {unmon_stats['g4_mw']}")
+        r4_c3.metric("USO Unmonitor", f"{unmon_stats['n_uso']} Site", f"VSAT: {unmon_stats['uso_vsat']} | MW: {unmon_stats['uso_mw']}")
+
+    st.markdown("---")
+
+    # =========================================================================
+    # B. BREAKDOWN TABEL STATUS PER KABUPATEN
+    # =========================================================================
+    st.markdown("### 🏛️ 2. Breakdown Detail per Kabupaten")
+    kab_col = temukan_kolom(result_df, ['kabupaten', 'regency', 'kab', 'kab/kota'])
+    cat_col = temukan_kolom(result_df, ['program', 'kategori', 'category', 'jenis_bts', 'bts_type', 'tipe_bts', 'tipe site', 'tipe_site'])
+
+    if kab_col and kab_col in result_df.columns:
+        df_calc = result_df.copy()
+
+        if cat_col and cat_col in df_calc.columns:
+            cat_upper = df_calc[cat_col].astype(str).str.upper()
+            df_calc['is_4g'] = cat_upper.str.contains('4G', na=False)
+            df_calc['is_uso'] = cat_upper.str.contains('USO', na=False)
+        else:
+            df_calc['is_4g'] = False
+            df_calc['is_uso'] = False
+
+        st_lower = df_calc['status'].astype(str).str.lower()
+        df_calc['is_up'] = st_lower == 'up'
+        df_calc['is_down'] = st_lower == 'down'
+
+        def aggregate_kabupaten(g):
+            return pd.Series({
+                'Total Site': len(g),
+                'BTS 4G': len(g[g['is_4g']]),
+                'BTS USO': len(g[g['is_uso']]),
+                '4G_Up': len(g[g['is_4g'] & g['is_up']]),
+                '4G_Down': len(g[g['is_4g'] & g['is_down']]),
+                'USO_Up': len(g[g['is_uso'] & g['is_up']]),
+                'USO_Down': len(g[g['is_uso'] & g['is_down']]),
+            })
+
+        kab_summary = df_calc.groupby(kab_col).apply(aggregate_kabupaten).reset_index()
+        kab_summary.rename(columns={kab_col: 'Kabupaten'}, inplace=True)
+        kab_summary = kab_summary.sort_values(by=['4G_Down', 'USO_Down', 'Total Site'], ascending=[False, False, False]).reset_index(drop=True)
+        kab_summary.insert(0, 'No', range(1, len(kab_summary) + 1))
+
+        columns_multi = pd.MultiIndex.from_tuples([
+            ('No', ''),
+            ('Kabupaten', ''),
+            ('Total Site', ''),
+            ('BTS 4G', ''),
+            ('BTS USO', ''),
+            ('Status BTS 4G', 'Site Up'),
+            ('Status BTS 4G', 'Site Down'),
+            ('Status BTS USO', 'Site Up'),
+            ('Status BTS USO', 'Site Down'),
+        ])
+        
+        kab_table_display = kab_summary.copy()
+        kab_table_display.columns = columns_multi
+
+        st.dataframe(kab_table_display, use_container_width=True, hide_index=True)
+    else:
+        st.info("Kolom Kabupaten tidak ditemukan di master data.")
 
     st.divider()
 
-    t1, t2, t3 = st.tabs(["🗺 Peta Sebaran", "📈 Tren", "📋 Data"])
+    # =========================================================================
+    # C. TABS NAVIGASI (PETA, TREN, DATA LENGKAP)
+    # =========================================================================
+    t1, t2, t3 = st.tabs(["🗺 Peta Sebaran", "📈 Tren Layanan", "📋 Data Lengkap"])
     with t1:
         if filter_mode_state == "Batas Administrasi Murni (Eksak)" or active_radius is None:
             map_display_df = result_df.copy()
@@ -600,6 +868,18 @@ if not result_df.empty:
             
             map_layers = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
             
+            geojson_path = 'indonesia.geojson'
+            if os.path.exists(geojson_path):
+                try:
+                    with open(geojson_path, 'r', encoding='utf-8') as f:
+                        geojson_kab = json.load(f)
+                    map_layers.append({
+                        "sourcetype": "geojson", "source": geojson_kab, "type": "line",
+                        "color": "rgba(255, 255, 255, 0.7)", "line": {"width": 1.5}, "below": "traces"
+                    })
+                except Exception:
+                    pass
+
             if center_coords and active_radius is not None:
                 ring_geojson = buat_polygon_lingkaran(center_coords[0], center_coords[1], active_radius)
                 map_layers.append({
@@ -623,12 +903,33 @@ if not result_df.empty:
             st.plotly_chart(fig_map, use_container_width=True)
 
     with t2:
-        trend_df = st.session_state["timeline_df"]
-        if not trend_df.empty:
-            trend_df = trend_df[trend_df['site_id_clean'].isin(result_df['site_id_clean'].unique())]
+        st.markdown("#### **Tren Layanan Historis pada Area Terdampak**")
+        timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
+        
+        if not timeline_df.empty:
+            affected_sites = result_df['site_id_clean'].unique()
+            trend_df = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)]
+            
             if not trend_df.empty:
-                max_ts = trend_df['parsed_time'].max()
-                trend_df = trend_df[trend_df['parsed_time'] < max_ts]
+                st.markdown("##### 📌 **Ringkasan Agregasi Periode Ini**")
+                agg_c1, agg_c2, agg_c3 = st.columns(3)
+                
+                rata_avail = trend_df['avail_num'].mean()
+                total_traffic_all_gb = trend_df['traffic_num'].sum() / 1024.0
+                rata_user = trend_df['user_num'].mean()
+                
+                agg_c1.metric("Rata-rata Availability", f"{rata_avail:.2f} %")
+                agg_c2.metric("Total Traffic Keseluruhan", f"{total_traffic_all_gb:,.2f} GB")
+                agg_c3.metric("Rata-rata Active User", f"{int(rata_user):,}")
+                
+                st.divider()
+
+                # TAMPILKAN SAMPAI 2 JAM TERAKHIR
+                unique_times = sorted(trend_df['parsed_time'].unique())
+                if len(unique_times) >= 2:
+                    cutoff_time = unique_times[-2]
+                    trend_df = trend_df[trend_df['parsed_time'] <= cutoff_time]
+
                 if not trend_df.empty:
                     tg = trend_df.groupby('parsed_time').agg(a=('avail_num', 'mean'), t=('traffic_num', 'sum'), u=('user_num', 'sum')).reset_index().sort_values('parsed_time')
                     tg['t'] = tg['t'] / 1024.0
@@ -648,6 +949,7 @@ if not result_df.empty:
                         st.plotly_chart(fig_user, use_container_width=True)
                     with c_r:
                         st.plotly_chart(fig_traffic, use_container_width=True)
+
     with t3:
         st.dataframe(result_df, use_container_width=True)
 
@@ -661,6 +963,7 @@ if not result_df.empty:
                     fig_map=fig_map, fig_avail=fig_avail, fig_traffic=fig_traffic, fig_user=fig_user
                 )
             st.success("File PPTX Berhasil Dibuat!")
+
     with col_down:
         current_loc = st.session_state.get("loc_label", "Area_Terdampak")
         safe_lokasi = str(current_loc).replace('/', '_').replace(':', '_').replace(' ', '_')
