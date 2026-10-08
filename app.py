@@ -291,8 +291,30 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
     p_4g, t_4g = hitung_breakdown_power_tower(df_4g)
     p_uso, t_uso = hitung_breakdown_power_tower(df_uso)
 
-    total_monitored = bts_up + bts_down
-    avg_avail_val = (bts_up / total_monitored * 100.0) if total_monitored > 0 else 0.0
+    # =========================================================================
+    # PERHITUNGAN AVAILABILITY METODE 2: RAW DATA DENGAN FILTER 24 JAM PENUH
+    # =========================================================================
+    timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
+    avg_avail_val = 0.0
+
+    if not timeline_df.empty:
+        affected_sites = df_result['site_id_clean'].unique()
+        trend_raw = timeline_df[timeline_df['site_id_clean'].isin(affected_sites)].copy()
+        
+        if not trend_raw.empty:
+            trend_raw['date_only'] = trend_raw['parsed_time'].dt.date
+            trend_raw['hour_only'] = trend_raw['parsed_time'].dt.hour
+            trend_raw['hours_count'] = trend_raw.groupby(['site_id_clean', 'date_only'])['hour_only'].transform('nunique')
+            
+            valid_avail_df = trend_raw[trend_raw['hours_count'] >= 24]
+            if not valid_avail_df.empty:
+                avg_avail_val = valid_avail_df['avail_num'].mean()
+            else:
+                avg_avail_val = trend_raw['avail_num'].mean()
+    else:
+        # Fallback jika raw data timeline belum tersedia
+        total_monitored = bts_up + bts_down
+        avg_avail_val = (bts_up / total_monitored * 100.0) if total_monitored > 0 else 0.0
 
     kab_col_summary = temukan_kolom(df_result, ['kabupaten', 'regency', 'kab', 'kab/kota'])
     top_kab_name = "-"
@@ -313,8 +335,7 @@ def generate_standard_pptx_report(jenis_kejadian, detail_kejadian, waktu_kejadia
                     top_kab_4g_down = len(df_top_kab[cat_str.str.contains('4G', na=False)])
                     top_kab_uso_down = len(df_top_kab[cat_str.str.contains('USO', na=False)])
 
-    # --- AMBIL TIMESTAMP RAW DATA TERAKHIR ---
-    timeline_df = st.session_state.get("timeline_df", pd.DataFrame())
+    # --- AMBIL TIMESTAMP RAW DATA TERAKHIR (CUT-OFF 2 JAM TERAKHIR) ---
     str_timestamp_raw = "-"
     str_tgl_raw = "-"
     str_jam_raw = "-"
