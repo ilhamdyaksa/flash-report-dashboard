@@ -5,3 +5,4 @@ plotly
 python-pptx
 requests
 kaleido
+openpyxl
