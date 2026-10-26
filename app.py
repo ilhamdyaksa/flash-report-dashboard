@@ -522,7 +522,6 @@ if file_master is not None:
     if site_col_master:
         df_master['site_id_clean'] = df_master[site_col_master].astype(str).str.strip().str.upper()
         
-        # Cegah hilangnya status pada saat Streamlit Rerun
         stored_api_dict = st.session_state.get("api_status_dict", {})
         if stored_api_dict:
             df_master['status'] = df_master['site_id_clean'].map(stored_api_dict).fillna('Unmonitor')
@@ -629,7 +628,6 @@ if not df_master.empty:
                 })
                 
                 with st.status("📡 Memulai Eksekusi 1-Click Automation...", expanded=True) as status:
-                    
                     st.write("🌍 BAKTI 3T Tertinggal, Terdepan, Terluar, PASTI BISA !!!!")
                     
                     auto_paket_str = ""
@@ -708,7 +706,6 @@ if not df_master.empty:
 # ==========================================
 result_df = st.session_state["result_df"]
 
-# Pastikan status API selalu dimapping ulang saat terjadi rerun (seperti klik tombol PPT)
 stored_api_dict = st.session_state.get("api_status_dict", {})
 if stored_api_dict and not result_df.empty:
     result_df['status'] = result_df['site_id_clean'].map(stored_api_dict).fillna('Unmonitor')
@@ -739,19 +736,10 @@ if not result_df.empty:
 
     st.subheader("⚡ Status Jaringan Terdampak (Realtime API)")
     c1, c2, c3, c4 = st.columns(4)
-    
-    c1.metric("Total Site", len(result_df))
-    c1.caption(f"4G: **{site_info['n_4g']}** | USO: **{site_info['n_uso']}**")
-    
-    c2.metric("Site Up", bts_up)
-    c2.caption(f"4G: **{up_stats['n_4g']}** | USO: **{up_stats['n_uso']}**")
-    
-    c3.metric("Site Down", bts_down, delta="- Kritis" if bts_down > 0 else "Normal", delta_color="inverse")
-    c3.caption(f"4G: **{down_stats['n_4g']}** | USO: **{down_stats['n_uso']}**")
-    
-    c4.metric("Unmonitor", unmonitor)
-    c4.caption(f"4G: **{unmon_stats['n_4g']}** | USO: **{unmon_stats['n_uso']}**")
-    
+    c1.metric("Total Site", len(result_df)); c1.caption(f"4G: **{site_info['n_4g']}** | USO: **{site_info['n_uso']}**")
+    c2.metric("Site Up", bts_up); c2.caption(f"4G: **{up_stats['n_4g']}** | USO: **{up_stats['n_uso']}**")
+    c3.metric("Site Down", bts_down, delta="- Kritis" if bts_down > 0 else "Normal", delta_color="inverse"); c3.caption(f"4G: **{down_stats['n_4g']}** | USO: **{down_stats['n_uso']}**")
+    c4.metric("Unmonitor", unmonitor); c4.caption(f"4G: **{unmon_stats['n_4g']}** | USO: **{unmon_stats['n_uso']}**")
     st.markdown("---")
     
     st.subheader("📡 Kategori Transmisi & Infrastruktur")
@@ -826,7 +814,6 @@ if not result_df.empty:
     with t1:
         map_display_df = df_master[df_master['jarak_km'] <= (st.session_state["active_radius"] + 20)].copy() if (st.session_state.get("filter_mode") != "Batas Administrasi Murni (Eksak)" and st.session_state.get("active_radius") and st.session_state.get("center_coords") and 'jarak_km' in df_master.columns) else result_df.copy()
         
-        # Pemetakan ulang status aman dari reset
         if stored_api_dict:
             map_display_df['status'] = map_display_df['site_id_clean'].map(stored_api_dict).fillna('Unmonitor')
         else:
@@ -840,7 +827,6 @@ if not result_df.empty:
             if not valid_map_df.empty:
                 valid_map_df['Status_Site'] = valid_map_df['status'].astype(str).str.capitalize()
                 
-                # Mengubah label status untuk site di luar radius (+20km) agar tidak dilabeli "Unmonitor"
                 if st.session_state.get("active_radius") and 'jarak_km' in valid_map_df.columns and st.session_state.get("filter_mode") != "Batas Administrasi Murni (Eksak)":
                     is_outside = valid_map_df['jarak_km'] > st.session_state["active_radius"]
                     valid_map_df.loc[is_outside, 'Status_Site'] = 'Lainnya' 
@@ -849,19 +835,22 @@ if not result_df.empty:
                     if cat_col_map:
                         is_4g_out = is_outside & valid_map_df[cat_col_map].astype(str).str.upper().str.contains('4G', na=False)
                         is_uso_out = is_outside & valid_map_df[cat_col_map].astype(str).str.upper().str.contains('USO', na=False)
-                        valid_map_df.loc[is_4g_out, 'Status_Site'] = 'BTS 4G'
-                        valid_map_df.loc[is_uso_out, 'Status_Site'] = 'BTS USO'
+                        valid_map_df.loc[is_4g_out, 'Status_Site'] = 'BTS 4G (Luar Area)'
+                        valid_map_df.loc[is_uso_out, 'Status_Site'] = 'BTS USO (Luar Area)'
 
                 color_map = {
                     'Up': '#00BFFF', 
                     'Down': '#FF5252', 
                     'Unmonitor': '#FFC107',
-                    'BTS 4G': '#BDBDBD',
-                    'BTS USO': '#9E9E9E',
+                    'BTS 4G (Luar Area)': '#9E9E9E',
+                    'BTS USO (Luar Area)': '#BDBDBD',
                     'Lainnya': '#E0E0E0'
                 }
                 
-                fig_map = px.scatter_map(valid_map_df, lat=lat_col, lon=lon_col, color='Status_Site', color_discrete_map=color_map, hover_name='site_id_clean', hover_data={'status': True, 'traffic_mb': ':.2f', 'max_user': True, lat_col: False, lon_col: False}, zoom=hitung_auto_zoom(valid_map_df[lat_col], valid_map_df[lon_col], st.session_state.get("active_radius")), center=dict(lat=float(valid_map_df[lat_col].mean()), lon=float(valid_map_df[lon_col].mean())), height=600)
+                center_lat_ui = float(valid_map_df[lat_col].mean())
+                center_lon_ui = float(valid_map_df[lon_col].mean())
+
+                fig_map = px.scatter_map(valid_map_df, lat=lat_col, lon=lon_col, color='Status_Site', color_discrete_map=color_map, hover_name='site_id_clean', hover_data={'status': True, 'traffic_mb': ':.2f', 'max_user': True, lat_col: False, lon_col: False}, zoom=hitung_auto_zoom(valid_map_df[lat_col], valid_map_df[lon_col], st.session_state.get("active_radius")), center=dict(lat=center_lat_ui, lon=center_lon_ui), height=600)
                 map_layers = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
                 
                 if os.path.exists('indonesia.geojson'):
@@ -916,22 +905,25 @@ if not result_df.empty:
                 
                 fig_map_capture = None
                 if not capture_df.empty and lat_col and lon_col:
-                    min_lat_cap, max_lat_cap = capture_df[lat_col].min(), capture_df[lat_col].max()
-                    min_lon_cap, max_lon_cap = capture_df[lon_col].min(), capture_df[lon_col].max()
+                    if st.session_state.get("center_coords"):
+                        center_lat_cap = st.session_state["center_coords"][0]
+                        center_lon_cap = st.session_state["center_coords"][1]
+                    else:
+                        center_lat_cap = center_lat_ui
+                        center_lon_cap = center_lon_ui
+
+                    calc_zoom = hitung_auto_zoom(capture_df[lat_col], capture_df[lon_col], st.session_state.get("active_radius"))
                     
-                    fig_map_capture = px.scatter_map(capture_df, lat=lat_col, lon=lon_col, color='Status_Site', color_discrete_map=color_map, height=600)
+                    fig_map_capture = px.scatter_map(capture_df, lat=lat_col, lon=lon_col, color='Status_Site', color_discrete_map=color_map, zoom=calc_zoom - 0.2, center=dict(lat=center_lat_cap, lon=center_lon_cap), height=600)
                     map_layers_capture = [{"below": 'traces', "sourcetype": "raster", "source": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]}]
                     
-                    if st.session_state["center_coords"] and st.session_state.get("active_radius"):
+                    if st.session_state.get("center_coords") and st.session_state.get("active_radius"):
                         ring_geo_cap = buat_polygon_lingkaran(st.session_state["center_coords"][0], st.session_state["center_coords"][1], st.session_state["active_radius"])
                         map_layers_capture.append({"sourcetype": "geojson", "source": ring_geo_cap, "type": "fill", "color": "rgba(255, 0, 255, 0.15)", "below": "traces"})
                         map_layers_capture.append({"sourcetype": "geojson", "source": ring_geo_cap, "type": "line", "color": "#FF00FF", "line": {"width": 2}, "below": "traces"})
                         fig_map_capture.add_scattermap(lat=[st.session_state["center_coords"][0]], lon=[st.session_state["center_coords"][1]], mode='markers', marker=dict(size=25, color='#FF00FF', opacity=0.9))
                         
-                    fig_map_capture.update_layout(
-                        map=dict(bounds=dict(west=min_lon_cap - 0.05, east=max_lon_cap + 0.05, south=min_lat_cap - 0.05, north=max_lat_cap + 0.05)),
-                        map_style="white-bg", map_layers=map_layers_capture, margin={"r":0,"t":0,"l":0,"b":0}, showlegend=False
-                    )
+                    fig_map_capture.update_layout(map_style="white-bg", map_layers=map_layers_capture, margin={"r":0,"t":0,"l":0,"b":0}, showlegend=False)
 
                 st.session_state["generated_pptx_bytes"] = generate_standard_pptx_report(j_kejadian, d_kejadian, w_kejadian, st.session_state["loc_label"], st.session_state["mode_label"], result_df, fig_map=fig_map_capture, fig_avail=fig_avail, fig_traffic=fig_traffic, fig_user=fig_user)
             st.success("File PPTX Berhasil Dibuat!")
