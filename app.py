@@ -1,5 +1,8 @@
 import io
 import os
+# Tambahkan 2 baris ini untuk auto-install chromium di Streamlit Cloud
+os.system("playwright install chromium")
+os.system("playwright install-deps chromium")
 import json
 import re
 import math
