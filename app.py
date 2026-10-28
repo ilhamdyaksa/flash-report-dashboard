@@ -1,8 +1,5 @@
 import io
 import os
-# Tambahkan 2 baris ini untuk auto-install chromium di Streamlit Cloud
-os.system("playwright install chromium")
-os.system("playwright install-deps chromium")
 import json
 import re
 import math
@@ -564,7 +561,8 @@ if not df_master.empty:
                 bmkg_lat, bmkg_lon = float(data_bmkg['Coordinates'].split(",")[0]), float(data_bmkg['Coordinates'].split(",")[1])
                 st.sidebar.info(f"📍 **{bmkg_wilayah}**\n\n🧲 {bmkg_mag} Mag")
                 
-                radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
+                # REVISI RADIUS (1-500)
+                radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 500, 10)
                 df_master['jarak_km'] = hitung_jarak_haversine_vec(bmkg_lat, bmkg_lon, df_master[lat_col], df_master[lon_col])
                 
                 temp_center_coords = (bmkg_lat, bmkg_lon)
@@ -586,7 +584,9 @@ if not df_master.empty:
                     list_options = sorted(df_master[target_col].dropna().astype(str).unique().tolist())
                     selected_val = st.sidebar.selectbox(f"Pilih {kategori_area}:", options=["-- Pilih --"] + list_options)
                     filter_mode = st.sidebar.radio("Cakupan Area:", ["Batas Administrasi Murni (Eksak)", "Radius Jarak (KM) dari Pusat Area"])
-                    radius_km = st.sidebar.slider("Radius (KM):", 1, 100, 10) if filter_mode == "Radius Jarak (KM) dari Pusat Area" else 10
+                    
+                    # REVISI RADIUS (1-500)
+                    radius_km = st.sidebar.slider("Radius (KM):", 1, 500, 10) if filter_mode == "Radius Jarak (KM) dari Pusat Area" else 10
 
                     if selected_val != "-- Pilih --":
                         matched_df = df_master[df_master[target_col].astype(str).str.lower() == selected_val.lower()]
@@ -605,7 +605,9 @@ if not df_master.empty:
                 c_l, c_r = st.sidebar.columns(2)
                 with c_l: input_lat = st.number_input("Latitude:", format="%.6f", value=-4.512300)
                 with c_r: input_lon = st.number_input("Longitude:", format="%.6f", value=140.412300)
-                radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 100, 10)
+                
+                # REVISI RADIUS (1-500)
+                radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 500, 10)
                 
                 df_master['jarak_km'] = hitung_jarak_haversine_vec(input_lat, input_lon, df_master[lat_col], df_master[lon_col])
                 temp_center_coords = (input_lat, input_lon)
