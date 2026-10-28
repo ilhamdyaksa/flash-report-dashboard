@@ -542,8 +542,9 @@ if not df_master.empty:
     lon_col = temukan_kolom(df_master, ['longitude', 'long', 'lon', 'x'])
 
     if lat_col and lon_col:
-        df_master[lat_col] = pd.to_numeric(df_master[lat_col], errors='coerce')
-        df_master[lon_col] = pd.to_numeric(df_master[lon_col], errors='coerce')
+        # PERBAIKAN FATAL: MENGGANTI KOMA MENJADI TITIK SEBELUM JADI ANGKA
+        df_master[lat_col] = pd.to_numeric(df_master[lat_col].astype(str).str.replace(',', '.'), errors='coerce')
+        df_master[lon_col] = pd.to_numeric(df_master[lon_col].astype(str).str.replace(',', '.'), errors='coerce')
 
         temp_center_coords, temp_result_df, temp_loc_label, temp_mode_label, temp_active_radius, temp_filter_mode = None, pd.DataFrame(), "", "", None, ""
         temp_jenis, temp_detail, temp_waktu = "", "", ""
@@ -890,7 +891,6 @@ if not result_df.empty:
                     tg = trend_df.groupby('parsed_time').agg(a=('avail_num', 'mean'), t=('traffic_num', 'sum'), u=('user_num', 'sum')).reset_index().sort_values('parsed_time')
                     tg['t'] = tg['t'] / 1024.0
                     
-                    # TAMPILAN CHART 1: AVAILABILITY (SMOOTH SPLINE + AREA GRADIENT)
                     fig_avail = px.line(tg, x='parsed_time', y='a', title='📈 Tren Rata-rata Availability (%)', markers=True)
                     fig_avail.update_traces(
                         mode='lines+markers',
@@ -905,7 +905,6 @@ if not result_df.empty:
                         yaxis=dict(gridcolor='#F0F0F0', range=[0, 100], title='Availability (%)')
                     )
 
-                    # TAMPILAN CHART 2: TRAFFIC (SMOOTH SPLINE + AREA GRADIENT)
                     fig_traffic = px.line(tg, x='parsed_time', y='t', title='📊 Tren Total Traffic (GB)', markers=True)
                     fig_traffic.update_traces(
                         mode='lines+markers',
@@ -920,7 +919,6 @@ if not result_df.empty:
                         yaxis=dict(gridcolor='#F0F0F0', rangemode='tozero', title='Traffic (GB)')
                     )
 
-                    # TAMPILAN CHART 3: ACTIVE USERS (SMOOTH SPLINE + AREA GRADIENT)
                     fig_user = px.line(tg, x='parsed_time', y='u', title='👥 Tren Total Active Users', markers=True)
                     fig_user.update_traces(
                         mode='lines+markers',
