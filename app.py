@@ -619,7 +619,6 @@ if not df_master.empty:
             pl_pass = st.text_input("Password:", type="password", value="Bakti@2024")
             token_uso = st.text_input("Token USO:", type="password", value="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc4NTQ4ODYwMSwianRpIjoiY2VhMmM1YTAtZWJmYi00ZDk1LThiMGMtMzUxYzQwODliMzliIiwidHlwZSI6ImFjY2VzcyIsInN1YiI6eyJ1c2VyX2lkIjo0MjUsInVzZXJuYW1lIjoiaXRqZW5fYWRtaW4iLCJmdWxsbmFtZSI6Ikl0amVuIEFkbWluIiwiZW1haWwiOiJpdGplbl9lbWFpbEBkZWZhdWx0LmNvbSIsInJvbGVzIjpbIkFsbCBSZXBvcnQiLCJIaXN0b3J5IiwiSW52ZW50b3J5IFNpdGUiLCJJbnZlbnRvcnkgU291cmNlIiwiSXRqZW4gS29taW5mbyIsIlJlcG9ydCBMb3cgU0xBIiwiUmVwb3J0IFBlcmZvcm1hbmNlIERlZ3JhZGVkIiwiUmVwb3J0IFJlcGV0aXRpdmUiLCJSZXBvcnQgUmVwZXRpdGl2ZSBTdW1tYXJ5IiwiUmVwb3J0IFNpdGUgTFZEIERvd24iLCJSZXBvcnQgU2l0ZSBMaXN0IiwiUmVwb3J0IFNpdGUgUG93ZXIgRG93biIsIlJlcG9ydCBTaXRlIFBvd2VyIFByb2JsZW0iLCJSZXBvcnQgU2l0ZSBTb21vIiwiUmVwb3J0IFNpdGUgVHJhZmZpYyBCdXN5IEhvdXIiLCJSZXBvcnQgU2l0ZSBUcmFmZmljIE1heCBBdmVyYWdlIiwiUmVwb3J0IFNpdGUgVnNhdCBEb3duIiwiUmVwb3J0IFN0YXRlIENvZGUiLCJSZXBvcnQgV2FybmluZyBMZXR0ZXIiLCJSZXBvcnQgWmVybyBUcmFmZmljIiwiU2l0ZSBFeHBvcnQiLCJTaXRlIFNlbnNvciBFeHBvcnQiXSwibGFuZGluZ19wYWdlX3BhdGgiOiIvZGFzaGJvYXJkIiwiZGFzaGJvYXJkX2lkcyI6WzEsMzEsMzMsNTddLCJwcm92aWRlcl9pZHMiOltdLCJjZWxsdWxhcl9vcGVyYXRvcl9pZHMiOltdLCJncm91cF9pZCI6MTYyLCJncm91cF9uYW1lIjoiSXRqZW4ifSwibmJmIjoxNzg1NDg4NjAxLCJjc3JmIjoiMWZjN2U1MzEtM2ZhOC00MjVjLTk3YjQtOGNlY2FiOTY5ZmIxIiwiZXhwIjoyMTAwODQ4NjAxfQ.kb67aTVP23JVhZ25I7zjcJ9ptt34O9FQnEGfbYqFI4Y")
             
-            # REVISI: DUA INPUT UNTUK START DATE & END DATE
             c_sd, c_ed = st.columns(2)
             with c_sd:
                 pl_start_date = st.date_input("Start Date:", datetime.now() - timedelta(days=3))
@@ -649,7 +648,6 @@ if not df_master.empty:
                     
                     st.write(f"⏳ [1/3] Menjalankan bot Chromium untuk mengunduh paket MSS [{auto_paket_str}]...")
                     
-                    # REVISI: Mengirim parameter Start Date dan End Date
                     df_scraped, msg = fetch_raw_hourly_via_playwright(
                         pl_user, pl_pass, 
                         start_date=pl_start_date.strftime("%Y-%m-%d"), 
@@ -695,9 +693,6 @@ if not df_master.empty:
                             
                             df_status = df_status.dropna(subset=['parsed_time'])
                             
-                            # REVISI: Pembatasan hardcode 3-4 hari ke belakang telah DIHAPUS SEPENUHNYA
-                            # Data akan menyesuaikan secara murni berdasar Start Date & End Date dari raw data.
-
                             df_status['date_str'] = df_status['parsed_time'].dt.strftime('%Y-%m-%d')
                             st.session_state["timeline_df"] = df_status[['site_id_clean', 'parsed_time', 'avail_num', 'traffic_num', 'user_num']].copy()
 
@@ -815,7 +810,6 @@ if not result_df.empty:
             trend_df_front = trend_df_front[trend_df_front['parsed_time'] < trend_df_front['parsed_time'].max()]
             trend_df_front['hours_count'] = trend_df_front.groupby(['site_id_clean', trend_df_front['parsed_time'].dt.date])['parsed_time'].transform(lambda x: x.dt.hour.nunique())
             
-            # Logika ini otomatis akan menyaring HARI MANA SAJA yang memiliki data genap 24 jam penuh di rentang start date s/d end date Anda.
             valid_avail_df = trend_df_front[trend_df_front['hours_count'] >= 24]
             rata_avail = valid_avail_df['avail_num'].mean() if not valid_avail_df.empty else trend_df_front['avail_num'].mean()
             label_avail = "Availability (Data 24 Jam)" if not valid_avail_df.empty else "Availability (Total Raw)"
@@ -896,17 +890,50 @@ if not result_df.empty:
                     tg = trend_df.groupby('parsed_time').agg(a=('avail_num', 'mean'), t=('traffic_num', 'sum'), u=('user_num', 'sum')).reset_index().sort_values('parsed_time')
                     tg['t'] = tg['t'] / 1024.0
                     
+                    # TAMPILAN CHART 1: AVAILABILITY (SMOOTH SPLINE + AREA GRADIENT)
                     fig_avail = px.line(tg, x='parsed_time', y='a', title='📈 Tren Rata-rata Availability (%)', markers=True)
-                    fig_avail.update_traces(line_color='#2E7D32', marker=dict(size=6))
-                    fig_avail.update_layout(plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), xaxis=dict(tickangle=-45, tickformat='%d %b %Y\n%H:%M', gridcolor='lightgray', title='Waktu'), yaxis=dict(gridcolor='lightgray', range=[0, 100], title='Availability (%)'))
+                    fig_avail.update_traces(
+                        mode='lines+markers',
+                        marker=dict(size=6, color='#00C853'),
+                        line=dict(color='#00C853', width=3, shape='spline'),
+                        fill='tozeroy',
+                        fillcolor='rgba(0, 200, 83, 0.1)'
+                    )
+                    fig_avail.update_layout(
+                        plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), 
+                        xaxis=dict(tickangle=-45, tickformat='%d %b %Y\n%H:%M', gridcolor='#F0F0F0', title='Waktu'), 
+                        yaxis=dict(gridcolor='#F0F0F0', range=[0, 100], title='Availability (%)')
+                    )
 
+                    # TAMPILAN CHART 2: TRAFFIC (SMOOTH SPLINE + AREA GRADIENT)
                     fig_traffic = px.line(tg, x='parsed_time', y='t', title='📊 Tren Total Traffic (GB)', markers=True)
-                    fig_traffic.update_traces(line_color='#0277BD', marker=dict(size=6))
-                    fig_traffic.update_layout(plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), xaxis=dict(tickangle=-45, tickformat='%d %b %Y\n%H:%M', gridcolor='lightgray', title='Waktu'), yaxis=dict(gridcolor='lightgray', rangemode='tozero', title='Traffic (GB)'))
+                    fig_traffic.update_traces(
+                        mode='lines+markers',
+                        marker=dict(size=6, color='#2962FF'),
+                        line=dict(color='#2962FF', width=3, shape='spline'),
+                        fill='tozeroy',
+                        fillcolor='rgba(41, 98, 255, 0.1)'
+                    )
+                    fig_traffic.update_layout(
+                        plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), 
+                        xaxis=dict(tickangle=-45, tickformat='%d %b %Y\n%H:%M', gridcolor='#F0F0F0', title='Waktu'), 
+                        yaxis=dict(gridcolor='#F0F0F0', rangemode='tozero', title='Traffic (GB)')
+                    )
 
+                    # TAMPILAN CHART 3: ACTIVE USERS (SMOOTH SPLINE + AREA GRADIENT)
                     fig_user = px.line(tg, x='parsed_time', y='u', title='👥 Tren Total Active Users', markers=True)
-                    fig_user.update_traces(line_color='#F9A825', marker=dict(size=6))
-                    fig_user.update_layout(plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), xaxis=dict(tickangle=-45, tickformat='%d %b %Y\n%H:%M', gridcolor='lightgray', title='Waktu'), yaxis=dict(gridcolor='lightgray', rangemode='tozero', title='Users'))
+                    fig_user.update_traces(
+                        mode='lines+markers',
+                        marker=dict(size=6, color='#FF6D00'),
+                        line=dict(color='#FF6D00', width=3, shape='spline'),
+                        fill='tozeroy',
+                        fillcolor='rgba(255, 109, 0, 0.1)'
+                    )
+                    fig_user.update_layout(
+                        plot_bgcolor='white', margin=dict(l=40, r=40, t=50, b=80), 
+                        xaxis=dict(tickangle=-45, tickformat='%d %b %Y\n%H:%M', gridcolor='#F0F0F0', title='Waktu'), 
+                        yaxis=dict(gridcolor='#F0F0F0', rangemode='tozero', title='Users')
+                    )
                     
                     cc1, cc2 = st.columns(2)
                     with cc1: st.plotly_chart(fig_avail, use_container_width=True); st.plotly_chart(fig_user, use_container_width=True)
