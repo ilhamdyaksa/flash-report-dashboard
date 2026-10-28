@@ -59,8 +59,9 @@ def fetch_live_api_status(user_4g, pass_4g, token_uso, target_sites):
         
     return site_status_dict, log_msgs
 
-def fetch_raw_hourly_via_playwright(username, password, target_date=None, paket_mss=None):
-    if not target_date: target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+def fetch_raw_hourly_via_playwright(username, password, start_date=None, end_date=None, paket_mss=None):
+    if not start_date: start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    if not end_date: end_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     list_paket = []
     if paket_mss:
@@ -117,14 +118,14 @@ def fetch_raw_hourly_via_playwright(username, password, target_date=None, paket_
                 date_inputs.nth(0).click(force=True)
                 page.keyboard.press("Control+A")
                 page.keyboard.press("Backspace")
-                date_inputs.nth(0).press_sequentially(f"{target_date} 00:00:00", delay=50)
+                date_inputs.nth(0).press_sequentially(f"{start_date} 00:00:00", delay=50)
                 page.keyboard.press("Enter")
                 time.sleep(1)
                 
                 date_inputs.nth(1).click(force=True)
                 page.keyboard.press("Control+A")
                 page.keyboard.press("Backspace")
-                date_inputs.nth(1).press_sequentially(f"{target_date} 23:00:00", delay=50)
+                date_inputs.nth(1).press_sequentially(f"{end_date} 23:00:00", delay=50)
                 page.keyboard.press("Enter")
                 time.sleep(1)
                 
@@ -138,7 +139,7 @@ def fetch_raw_hourly_via_playwright(username, password, target_date=None, paket_
             time.sleep(2)
 
             input_file_name = page.locator('.ant-modal-content input, div[role="dialog"] input').locator("visible=true").first
-            nama_file_eks = f"Report_KPI_BTS_{target_date}"
+            nama_file_eks = f"Report_KPI_BTS_{start_date}_to_{end_date}"
             if list_paket: nama_file_eks += "_pkt" + "-".join(list_paket[:4])
             
             waktu_eksekusi = datetime.now()
@@ -561,7 +562,6 @@ if not df_master.empty:
                 bmkg_lat, bmkg_lon = float(data_bmkg['Coordinates'].split(",")[0]), float(data_bmkg['Coordinates'].split(",")[1])
                 st.sidebar.info(f"📍 **{bmkg_wilayah}**\n\n🧲 {bmkg_mag} Mag")
                 
-                # REVISI RADIUS (1-500)
                 radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 500, 10)
                 df_master['jarak_km'] = hitung_jarak_haversine_vec(bmkg_lat, bmkg_lon, df_master[lat_col], df_master[lon_col])
                 
@@ -585,7 +585,6 @@ if not df_master.empty:
                     selected_val = st.sidebar.selectbox(f"Pilih {kategori_area}:", options=["-- Pilih --"] + list_options)
                     filter_mode = st.sidebar.radio("Cakupan Area:", ["Batas Administrasi Murni (Eksak)", "Radius Jarak (KM) dari Pusat Area"])
                     
-                    # REVISI RADIUS (1-500)
                     radius_km = st.sidebar.slider("Radius (KM):", 1, 500, 10) if filter_mode == "Radius Jarak (KM) dari Pusat Area" else 10
 
                     if selected_val != "-- Pilih --":
@@ -606,7 +605,6 @@ if not df_master.empty:
                 with c_l: input_lat = st.number_input("Latitude:", format="%.6f", value=-4.512300)
                 with c_r: input_lon = st.number_input("Longitude:", format="%.6f", value=140.412300)
                 
-                # REVISI RADIUS (1-500)
                 radius_km = st.sidebar.slider("Radius Terdampak (KM):", 1, 500, 10)
                 
                 df_master['jarak_km'] = hitung_jarak_haversine_vec(input_lat, input_lon, df_master[lat_col], df_master[lon_col])
@@ -620,7 +618,13 @@ if not df_master.empty:
             pl_user = st.text_input("Username:", "ilham.dyaksa")
             pl_pass = st.text_input("Password:", type="password", value="Bakti@2024")
             token_uso = st.text_input("Token USO:", type="password", value="eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc4NTQ4ODYwMSwianRpIjoiY2VhMmM1YTAtZWJmYi00ZDk1LThiMGMtMzUxYzQwODliMzliIiwidHlwZSI6ImFjY2VzcyIsInN1YiI6eyJ1c2VyX2lkIjo0MjUsInVzZXJuYW1lIjoiaXRqZW5fYWRtaW4iLCJmdWxsbmFtZSI6Ikl0amVuIEFkbWluIiwiZW1haWwiOiJpdGplbl9lbWFpbEBkZWZhdWx0LmNvbSIsInJvbGVzIjpbIkFsbCBSZXBvcnQiLCJIaXN0b3J5IiwiSW52ZW50b3J5IFNpdGUiLCJJbnZlbnRvcnkgU291cmNlIiwiSXRqZW4gS29taW5mbyIsIlJlcG9ydCBMb3cgU0xBIiwiUmVwb3J0IFBlcmZvcm1hbmNlIERlZ3JhZGVkIiwiUmVwb3J0IFJlcGV0aXRpdmUiLCJSZXBvcnQgUmVwZXRpdGl2ZSBTdW1tYXJ5IiwiUmVwb3J0IFNpdGUgTFZEIERvd24iLCJSZXBvcnQgU2l0ZSBMaXN0IiwiUmVwb3J0IFNpdGUgUG93ZXIgRG93biIsIlJlcG9ydCBTaXRlIFBvd2VyIFByb2JsZW0iLCJSZXBvcnQgU2l0ZSBTb21vIiwiUmVwb3J0IFNpdGUgVHJhZmZpYyBCdXN5IEhvdXIiLCJSZXBvcnQgU2l0ZSBUcmFmZmljIE1heCBBdmVyYWdlIiwiUmVwb3J0IFNpdGUgVnNhdCBEb3duIiwiUmVwb3J0IFN0YXRlIENvZGUiLCJSZXBvcnQgV2FybmluZyBMZXR0ZXIiLCJSZXBvcnQgWmVybyBUcmFmZmljIiwiU2l0ZSBFeHBvcnQiLCJTaXRlIFNlbnNvciBFeHBvcnQiXSwibGFuZGluZ19wYWdlX3BhdGgiOiIvZGFzaGJvYXJkIiwiZGFzaGJvYXJkX2lkcyI6WzEsMzEsMzMsNTddLCJwcm92aWRlcl9pZHMiOltdLCJjZWxsdWxhcl9vcGVyYXRvcl9pZHMiOltdLCJncm91cF9pZCI6MTYyLCJncm91cF9uYW1lIjoiSXRqZW4ifSwibmJmIjoxNzg1NDg4NjAxLCJjc3JmIjoiMWZjN2U1MzEtM2ZhOC00MjVjLTk3YjQtOGNlY2FiOTY5ZmIxIiwiZXhwIjoyMTAwODQ4NjAxfQ.kb67aTVP23JVhZ25I7zjcJ9ptt34O9FQnEGfbYqFI4Y")
-            pl_date = st.date_input("Target Tgl Data:", datetime.now() - timedelta(days=1))
+            
+            # REVISI: DUA INPUT UNTUK START DATE & END DATE
+            c_sd, c_ed = st.columns(2)
+            with c_sd:
+                pl_start_date = st.date_input("Start Date:", datetime.now() - timedelta(days=3))
+            with c_ed:
+                pl_end_date = st.date_input("End Date:", datetime.now() - timedelta(days=1))
 
         if not temp_result_df.empty:
             st.sidebar.markdown(f"🎯 **Terdeteksi {len(temp_result_df)} Site Terdampak**")
@@ -644,7 +648,14 @@ if not df_master.empty:
                         if extracted_nums: auto_paket_str = ", ".join(sorted(list(set(extracted_nums)), key=lambda x: int(x)))
                     
                     st.write(f"⏳ [1/3] Menjalankan bot Chromium untuk mengunduh paket MSS [{auto_paket_str}]...")
-                    df_scraped, msg = fetch_raw_hourly_via_playwright(pl_user, pl_pass, target_date=pl_date.strftime("%Y-%m-%d"), paket_mss=auto_paket_str)
+                    
+                    # REVISI: Mengirim parameter Start Date dan End Date
+                    df_scraped, msg = fetch_raw_hourly_via_playwright(
+                        pl_user, pl_pass, 
+                        start_date=pl_start_date.strftime("%Y-%m-%d"), 
+                        end_date=pl_end_date.strftime("%Y-%m-%d"),
+                        paket_mss=auto_paket_str
+                    )
                     
                     if df_scraped is not None:
                         st.session_state["raw_hourly_df"] = df_scraped
@@ -683,8 +694,9 @@ if not df_master.empty:
                             if df_status['parsed_time'].isna().all(): df_status['parsed_time'] = pd.to_datetime(combined_dt, errors='coerce')
                             
                             df_status = df_status.dropna(subset=['parsed_time'])
-                            if not df_status.empty:
-                                df_status = df_status[df_status['parsed_time'] >= (df_status['parsed_time'].max() - pd.Timedelta(days=4))].copy()
+                            
+                            # REVISI: Pembatasan hardcode 3-4 hari ke belakang telah DIHAPUS SEPENUHNYA
+                            # Data akan menyesuaikan secara murni berdasar Start Date & End Date dari raw data.
 
                             df_status['date_str'] = df_status['parsed_time'].dt.strftime('%Y-%m-%d')
                             st.session_state["timeline_df"] = df_status[['site_id_clean', 'parsed_time', 'avail_num', 'traffic_num', 'user_num']].copy()
@@ -802,6 +814,8 @@ if not result_df.empty:
         if not trend_df_front.empty:
             trend_df_front = trend_df_front[trend_df_front['parsed_time'] < trend_df_front['parsed_time'].max()]
             trend_df_front['hours_count'] = trend_df_front.groupby(['site_id_clean', trend_df_front['parsed_time'].dt.date])['parsed_time'].transform(lambda x: x.dt.hour.nunique())
+            
+            # Logika ini otomatis akan menyaring HARI MANA SAJA yang memiliki data genap 24 jam penuh di rentang start date s/d end date Anda.
             valid_avail_df = trend_df_front[trend_df_front['hours_count'] >= 24]
             rata_avail = valid_avail_df['avail_num'].mean() if not valid_avail_df.empty else trend_df_front['avail_num'].mean()
             label_avail = "Availability (Data 24 Jam)" if not valid_avail_df.empty else "Availability (Total Raw)"
