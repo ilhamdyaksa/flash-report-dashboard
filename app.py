@@ -26,6 +26,7 @@ from playwright.sync_api import sync_playwright
 def fetch_live_api_status(user_4g, pass_4g, token_uso, target_sites):
     site_status_dict = {}
     log_msgs = []
+    target_set = set(target_sites) # Pencarian secepat kilat (O(1))
     
     try:
         res_login = requests.post("https://api.baktioss.id/v2/auth/login", json={"username": user_4g, "password": pass_4g}, timeout=30)
@@ -33,29 +34,44 @@ def fetch_live_api_status(user_4g, pass_4g, token_uso, target_sites):
             token_4g = res_login.json().get("data", {}).get("accessToken")
             if token_4g:
                 headers = {"Authorization": f"Bearer {token_4g}"}
-                for sid in target_sites:
-                    try:
-                        res_site = requests.get(f"https://api.baktioss.id/v1/sites/detail/information?sites={sid}", headers=headers, timeout=10)
-                        if res_site.status_code == 200:
-                            data = res_site.json()
-                            if "status" in data and data["status"]:
-                                st_val = str(data["status"]).strip().capitalize()
-                                site_status_dict[sid] = st_val
-                    except Exception:
-                        pass
-        else: log_msgs.append(f"❌ Login API 4G Gagal: {res_login.status_code}")
-    except Exception as e: log_msgs.append(f"❌ Gagal tarik API 4G: {e}")
+                try:
+                    page_num = 1
+                    while True:
+                        # PENARIKAN MASSAL (500 per halaman) AGAR TIDAK TIMEOUT
+                        res_4g = requests.get(f"https://api.baktioss.id/v2/sites/?limit=500&page={page_num}", headers=headers, timeout=20)
+                        if res_4g.status_code == 200:
+                            docs = res_4g.json().get("data", {}).get("docs", [])
+                            if not docs: break
+                            
+                            for site in docs:
+                                sid = str(site.get("name", "")).strip().upper()
+                                if sid in target_set:
+                                    site_status_dict[sid] = str(site.get("status", "")).strip().capitalize()
+                            
+                            total_pages = res_4g.json().get("data", {}).get("totalPages", 1)
+                            if page_num >= total_pages or page_num >= 20: 
+                                break
+                            page_num += 1
+                        else:
+                            break
+                except Exception as e:
+                    log_msgs.append(f"❌ Gagal tarik API 4G (Pagination): {e}")
+        else: 
+            log_msgs.append(f"❌ Login API 4G Gagal: {res_login.status_code}")
+    except Exception as e: 
+        log_msgs.append(f"❌ Gagal tarik API 4G: {e}")
 
     try:
         res_uso = requests.get("http://nmsapi.btsbakti.com/api/v1/itjen_kominfo/site?limit=10000", headers={"Authorization": f"Bearer {token_uso}"}, timeout=30)
         if res_uso.status_code == 200:
             for site in res_uso.json().get("result", []):
                 sid = str(site.get("site_id", "")).strip().upper()
-                if sid in target_sites: 
+                if sid in target_set: 
                     st_val = str(site.get("site_status", "")).strip().capitalize()
                     if st_val.lower() == "other_issue": st_val = "Unmonitor"
-                    if sid: site_status_dict[sid] = st_val
-    except Exception as e: log_msgs.append(f"❌ Gagal tarik API USO: {e}")
+                    site_status_dict[sid] = st_val
+    except Exception as e: 
+        log_msgs.append(f"❌ Gagal tarik API USO: {e}")
         
     return site_status_dict, log_msgs
 
@@ -542,7 +558,6 @@ if not df_master.empty:
     lon_col = temukan_kolom(df_master, ['longitude', 'long', 'lon', 'x'])
 
     if lat_col and lon_col:
-        # PERBAIKAN FATAL: MENGGANTI KOMA MENJADI TITIK SEBELUM JADI ANGKA
         df_master[lat_col] = pd.to_numeric(df_master[lat_col].astype(str).str.replace(',', '.'), errors='coerce')
         df_master[lon_col] = pd.to_numeric(df_master[lon_col].astype(str).str.replace(',', '.'), errors='coerce')
 
