@@ -1,5 +1,20 @@
 import io
 import os
+
+import io
+import os
+import subprocess
+
+# --- AUTO-INSTALL PLAYWRIGHT BROWSER DI CLOUD ---
+try:
+    # Memeriksa apakah browser sudah ada, jika belum jalankan download
+    subprocess.run(["playwright", "install", "chromium"], check=True)
+except Exception as e:
+    pass
+# ------------------------------------------------
+
+
+
 import json
 import re
 import math
